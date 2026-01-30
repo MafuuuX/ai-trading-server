@@ -37,6 +37,7 @@ class ServerState:
         self.training_status = {}  # ticker -> status
         self.training_history = []
         self.last_training = {}
+        self.startup_time = datetime.now()
         
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
@@ -83,11 +84,13 @@ class HealthResponse(BaseModel):
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
     """Server health check"""
+    uptime = (datetime.now() - state.startup_time).total_seconds()
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "active_models": len(state.active_models),
-        "training_queue": sum(1 for s in state.training_status.values() if s == "training")
+        "training_queue": sum(1 for s in state.training_status.values() if s == "training"),
+        "uptime_seconds": uptime
     }
 
 @app.get("/api/models", response_model=List[ModelInfo])
