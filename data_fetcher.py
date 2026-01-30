@@ -5,6 +5,7 @@ Fetches live market data for 135 stocks with caching and rate limiting
 import os
 import pandas as pd
 import yfinance as yf
+import requests
 from datetime import datetime, timedelta
 import pickle
 from pathlib import Path
@@ -57,6 +58,28 @@ class CachedDataFetcher:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_hours = cache_hours
         self.rate_limit_delay = 0.5  # seconds between requests
+        self.session = requests.Session()
+        self._last_ping = None
+        self._ping_ttl = 60  # seconds
+
+    def _yahoo_ping(self) -> bool:
+        """Check basic connectivity to Yahoo endpoints"""
+        now = time.time()
+        if self._last_ping and (now - self._last_ping) < self._ping_ttl:
+            return True
+        try:
+            resp = self.session.get(
+                "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                self._last_ping = now
+                return True
+            print(f"Yahoo ping failed: HTTP {resp.status_code}")
+            return False
+        except Exception as e:
+            print(f"Yahoo ping error: {e}")
+            return False
         
     def _get_cache_file(self, ticker: str) -> Path:
         """Get cache file path for ticker"""
@@ -90,16 +113,36 @@ class CachedDataFetcher:
         # Fetch fresh data
         print(f"Fetching {ticker}...")
         time.sleep(self.rate_limit_delay)
+
+        if not self._yahoo_ping():
+            print(f"Error fetching {ticker}: Yahoo endpoint not reachable")
+            return None
         
         try:
-            df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False, threads=False)
+            df = yf.download(
+                ticker,
+                period=period,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+                session=self.session
+            )
             if df is None or df.empty or len(df) < 200:
                 # Retry with longer period
-                df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False, threads=False)
+                df = yf.download(
+                    ticker,
+                    period="5y",
+                    interval="1d",
+                    auto_adjust=True,
+                    progress=False,
+                    threads=False,
+                    session=self.session
+                )
             if df is None or df.empty or len(df) < 200:
                 # Final fallback
                 try:
-                    df = yf.Ticker(ticker).history(period="max", auto_adjust=True)
+                    df = yf.Ticker(ticker, session=self.session).history(period="max", auto_adjust=True)
                 except Exception:
                     df = None
             if df is None or df.empty:
