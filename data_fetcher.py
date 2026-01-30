@@ -59,14 +59,14 @@ class CachedDataFetcher:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_hours = cache_hours
-        self.rate_limit_delay = 1.5  # seconds between requests (avoid 429)
+        self.rate_limit_delay = 0.5  # seconds between requests (reduced from 1.5)
         self.session = requests.Session()
         self._last_ping = None
         self._ping_ttl = 60  # seconds
         self.last_error = None
         self.logger = logging.getLogger(__name__)
-        self.max_retries = 3
-        self.retry_delay = 5  # seconds
+        self.max_retries = 2  # reduced from 3
+        self.retry_delay = 2  # reduced from 5 (seconds)
 
     def _yahoo_ping(self) -> str:
         """Check basic connectivity to Yahoo endpoints"""
@@ -76,7 +76,7 @@ class CachedDataFetcher:
         try:
             resp = self.session.get(
                 "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
-                timeout=5
+                timeout=3  # reduced from 5
             )
             if resp.status_code == 200:
                 self._last_ping = now
@@ -103,7 +103,7 @@ class CachedDataFetcher:
         url = f"https://stooq.pl/q/d/l/?s={symbol}&i=d"
         self.logger.info(f"Stooq: Fetching {ticker} from {url}")
         try:
-            resp = self.session.get(url, timeout=10)
+            resp = self.session.get(url, timeout=5)  # reduced from 10
             self.logger.info(f"Stooq: HTTP {resp.status_code} for {ticker}")
             if resp.status_code != 200:
                 self.last_error = f"Stooq HTTP {resp.status_code} for {ticker}"

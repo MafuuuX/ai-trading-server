@@ -13,6 +13,8 @@ Environment="SESSION_SECRET=change_this_secret"
 ExecStart=/home/mafuuux/ai-trading-server/venv/bin/python /home/mafuuux/ai-trading-server/server.py
 Restart=always
 RestartSec=5
+TimeoutStopSec=30
+TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target
