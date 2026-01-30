@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Optional, Dict, List
 import logging
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 import pandas as pd
@@ -26,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 # FastAPI app
 app = FastAPI(title="AI Trading Server", version="1.0.0")
+
+# UI
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 # Global state
 class ServerState:
@@ -312,6 +319,12 @@ async def root():
         "docs": "/docs",
         "health": "/api/health"
     }
+
+
+@app.get("/ui")
+async def ui_dashboard(request: Request):
+    """Simple web GUI dashboard"""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
 
 # ============================================================================
 # RUN

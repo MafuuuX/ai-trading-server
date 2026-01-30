@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Trading Server</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <div class="title">AI Trading Server</div>
+    <div id="healthBadge" class="badge">Checking...</div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Status</h2>
+      <div class="grid">
+        <div>
+          <div class="label">Uptime</div>
+          <div id="uptime" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Active Models</div>
+          <div id="activeModels" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Training Queue</div>
+          <div id="trainingQueue" class="value">—</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button onclick="refreshAll()">Refresh</button>
+        <button class="secondary" onclick="trainBatch()">Train Batch (Top 10)</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Models</h2>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Version</th>
+              <th>Trained At</th>
+              <th>Size</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="modelsTable">
+            <tr><td colspan="5">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Training Status</h2>
+      <div class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th>Ticker</th>
+              <th>Status</th>
+              <th>Last Trained</th>
+              <th>Next Training</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="trainingTable">
+            <tr><td colspan="5">Loading...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
