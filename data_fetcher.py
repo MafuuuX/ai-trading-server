@@ -239,6 +239,18 @@ class CachedDataFetcher:
                 self.logger.error(self.last_error)
                 return None
             df = df.reset_index()
+            # Normalize dtypes
+            if "Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            for col in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            # Drop invalid rows
+            required_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+            if required_cols:
+                df = df.dropna(subset=required_cols)
+            if "Date" in df.columns:
+                df = df.dropna(subset=["Date"])
             if len(df) < 100:
                 self.logger.warning(f"Warning: {ticker} data length is low ({len(df)} rows)")
             
