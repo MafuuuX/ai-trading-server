@@ -10,7 +10,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Input, Model
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, Callback
-import ta
 import joblib
 from pathlib import Path
 from datetime import datetime
@@ -85,7 +84,7 @@ class ModelTrainer:
         # Ensure Close column has no NaN/None values
         if df['Close'].isna().any():
             print(f"⚠️ Found {df['Close'].isna().sum()} NaN values in Close column, forward-filling")
-            df['Close'] = df['Close'].fillna(method='ffill').fillna(method='bfill')
+            df['Close'] = df['Close'].bfill().ffill()
         
         # Drop any remaining rows with NaN in critical columns
         critical_cols = ['Close', 'High', 'Low']
