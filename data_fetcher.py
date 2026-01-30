@@ -101,13 +101,22 @@ class CachedDataFetcher:
         """Fetch historical data from Stooq (daily)"""
         symbol = self._stooq_symbol(ticker)
         url = f"https://stooq.pl/q/d/l/?s={symbol}&i=d"
+        self.logger.info(f"Stooq: Fetching {ticker} from {url}")
         try:
             resp = self.session.get(url, timeout=10)
+            self.logger.info(f"Stooq: HTTP {resp.status_code} for {ticker}")
             if resp.status_code != 200:
                 self.last_error = f"Stooq HTTP {resp.status_code} for {ticker}"
                 self.logger.error(self.last_error)
                 return None
+            
+            # Log response size
+            self.logger.info(f"Stooq: Response size {len(resp.text)} bytes for {ticker}")
+            
             df = pd.read_csv(io.StringIO(resp.text))
+            self.logger.info(f"Stooq: CSV parsed, {len(df)} rows initially for {ticker}")
+            self.logger.info(f"Stooq: Columns: {df.columns.tolist()}")
+            
             if df is None or df.empty:
                 self.last_error = f"Stooq empty dataset for {ticker}"
                 self.logger.error(self.last_error)
@@ -122,15 +131,19 @@ class CachedDataFetcher:
                     rename[col_map[key]] = key.capitalize()
             if rename:
                 df.rename(columns=rename, inplace=True)
+                self.logger.info(f"Stooq: Renamed columns: {rename}")
 
             # Ensure required columns exist
             required = ["Date", "Open", "High", "Low", "Close", "Volume"]
-            for col in required:
-                if col not in df.columns:
-                    self.last_error = f"Stooq missing column {col} for {ticker}"
-                    self.logger.error(self.last_error)
-                    return None
+            missing = [col for col in required if col not in df.columns]
+            if missing:
+                self.last_error = f"Stooq missing columns {missing} for {ticker}"
+                self.logger.error(self.last_error)
+                self.logger.error(f"Available columns: {df.columns.tolist()}")
+                return None
 
+            self.logger.info(f"Stooq: Before cleaning: {len(df)} rows, dtypes: {df.dtypes.to_dict()}")
+            
             # Convert Date to datetime first
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
             
@@ -139,8 +152,15 @@ class CachedDataFetcher:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
             
+            # Log NaN counts before dropping
+            nan_counts = df.isna().sum()
+            if nan_counts.any():
+                self.logger.info(f"Stooq: NaN counts before drop: {nan_counts.to_dict()}")
+            
             # Remove rows with any NaN in price columns
+            df_before = len(df)
             df = df.dropna(subset=["Date", "Open", "High", "Low", "Close", "Volume"])
+            self.logger.info(f"Stooq: After dropna: {len(df)} rows (dropped {df_before - len(df)})")
             
             if df.empty or len(df) < 100:
                 self.last_error = f"Stooq insufficient data for {ticker} (got {len(df)} rows)"
@@ -152,11 +172,13 @@ class CachedDataFetcher:
             if "Adj Close" not in df.columns:
                 df["Adj Close"] = df["Close"]
             
-            self.logger.info(f"Stooq: {ticker} fetched {len(df)} rows")
+            self.logger.info(f"✅ Stooq: {ticker} fetched {len(df)} rows, Date range {df['Date'].min()} to {df['Date'].max()}")
             return df
         except Exception as e:
             self.last_error = f"Stooq fetch error for {ticker}: {e}"
             self.logger.error(self.last_error)
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
         
     def _get_cache_file(self, ticker: str) -> Path:
