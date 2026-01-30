@@ -78,14 +78,27 @@ class CachedDataFetcher:
         # Check cache first
         if self._is_cache_valid(ticker):
             with open(cache_file, 'rb') as f:
-                return pickle.load(f)
+                cached = pickle.load(f)
+                if cached is not None and not cached.empty:
+                    return cached
+                # Cached data is empty -> refetch
+                try:
+                    cache_file.unlink()
+                except Exception:
+                    pass
         
         # Fetch fresh data
         print(f"Fetching {ticker}...")
         time.sleep(self.rate_limit_delay)
         
         try:
-            df = yf.download(ticker, period=period, progress=False)
+            df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False, threads=False)
+            if df is None or df.empty or len(df) < 200:
+                # Retry with longer period
+                df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False, threads=False)
+            if df is None or df.empty:
+                print(f"Error fetching {ticker}: empty dataset")
+                return None
             df = df.reset_index()
             
             # Cache the data
