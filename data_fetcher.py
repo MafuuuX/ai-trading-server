@@ -96,10 +96,18 @@ class CachedDataFetcher:
             if df is None or df.empty or len(df) < 200:
                 # Retry with longer period
                 df = yf.download(ticker, period="5y", interval="1d", auto_adjust=True, progress=False, threads=False)
+            if df is None or df.empty or len(df) < 200:
+                # Final fallback
+                try:
+                    df = yf.Ticker(ticker).history(period="max", auto_adjust=True)
+                except Exception:
+                    df = None
             if df is None or df.empty:
                 print(f"Error fetching {ticker}: empty dataset")
                 return None
             df = df.reset_index()
+            if len(df) < 100:
+                print(f"Warning: {ticker} data length is low ({len(df)} rows)")
             
             # Cache the data
             with open(cache_file, 'wb') as f:
