@@ -12,9 +12,10 @@ from typing import Optional, Dict, List
 import logging
 import base64
 import secrets
+import hmac
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.security.utils import get_authorization_scheme_param
@@ -37,30 +38,43 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-# Basic auth for web UI
+# Login auth for web UI
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "changeme")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_secret")
+SESSION_COOKIE = "ai_trading_session"
 
 
-def _is_authorized(auth_header: str) -> bool:
-    scheme, param = get_authorization_scheme_param(auth_header)
-    if scheme.lower() != "basic" or not param:
-        return False
+def _sign_session(username: str) -> str:
+    payload = f"{username}"
+    signature = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    token = f"{payload}.{signature}"
+    return base64.b64encode(token.encode("utf-8")).decode("utf-8")
+
+
+def _verify_session(token: str) -> bool:
     try:
-        decoded = base64.b64decode(param).decode("utf-8")
-        username, password = decoded.split(":", 1)
+        decoded = base64.b64decode(token).decode("utf-8")
+        payload, signature = decoded.rsplit(".", 1)
+        expected = hmac.new(SESSION_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
     except Exception:
         return False
-    return secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASS)
+
+
+def _is_logged_in(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE)
+    if not token:
+        return False
+    return _verify_session(token)
 
 
 @app.middleware("http")
-async def ui_basic_auth_middleware(request: Request, call_next):
+async def ui_login_middleware(request: Request, call_next):
     path = request.url.path
-    if path.startswith("/ui") or path.startswith("/static"):
-        auth_header = request.headers.get("Authorization", "")
-        if not _is_authorized(auth_header):
-            return Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
+    if path.startswith("/ui"):
+        if not _is_logged_in(request):
+            return RedirectResponse("/login")
     return await call_next(request)
 
 # Global state
@@ -348,6 +362,33 @@ async def root():
         "docs": "/docs",
         "health": "/api/health"
     }
+
+
+@app.get("/login")
+async def login_page(request: Request):
+    """Login page"""
+    if _is_logged_in(request):
+        return RedirectResponse("/ui")
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@app.post("/login")
+async def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    """Handle login"""
+    if secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASS):
+        response = RedirectResponse("/ui", status_code=302)
+        token = _sign_session(username)
+        response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
+        return response
+    return templates.TemplateResponse("login.html", {"request": request, "error": "Invalid credentials"})
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Logout and clear session"""
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
 
 
 @app.get("/ui")
