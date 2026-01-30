@@ -152,12 +152,25 @@ let lastQueueData = {};
 async function refreshQueue() {
   const queueEl = document.getElementById("queueList");
   const etaEl = document.getElementById("queueEta");
+  const countEl = document.getElementById("queueCount");
   if (!queueEl || !etaEl) return;
   
   try {
     const data = await fetchJson("/api/queue");
-    const queueText = data.queue.length ? data.queue.join(", ") : "Queue is empty";
+    
+    // Show current training + pending queue
+    let queueText = "";
+    if (data.current) {
+      queueText = `[TRAINING] ${data.current}`;
+      if (data.queue.length > 0) {
+        queueText += ` → ${data.queue.join(", ")}`;
+      }
+    } else {
+      queueText = data.queue.length ? data.queue.join(", ") : "Queue is empty";
+    }
+    
     const etaText = data.eta_seconds ? `ETA: ~${Math.ceil(data.eta_seconds / 60)} min` : "ETA: —";
+    const countText = `${data.count} total`;
     
     if (queueText !== lastQueueData.text) {
       queueEl.textContent = queueText;
@@ -166,6 +179,10 @@ async function refreshQueue() {
     if (etaText !== lastQueueData.eta) {
       etaEl.textContent = etaText;
       lastQueueData.eta = etaText;
+    }
+    if (countEl && countText !== lastQueueData.count) {
+      countEl.textContent = countText;
+      lastQueueData.count = countText;
     }
   } catch (e) {
     // Silent fail for queue

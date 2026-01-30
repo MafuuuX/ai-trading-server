@@ -100,8 +100,10 @@ class ServerState:
         
         self.active_models = {}  # ticker -> model_version
         self.training_status = {}  # ticker -> status
-        self.training_queue = []  # list of tickers
+        self.training_queue = []  # list of tickers to process
+        self.training_history = []  # completed trainings
         self.is_training = False
+        self.current_training_ticker = None  # currently processing ticker
         self.training_progress = {}  # ticker -> 0-100
         self.training_start = {}  # ticker -> datetime
         self.training_metrics = {}  # ticker -> metrics
@@ -218,12 +220,25 @@ async def get_logs():
 
 @app.get("/api/queue")
 async def get_queue():
-    """Current training queue"""
+    """Current training queue with proper counting"""
+    # Get pending queue (not yet processed)
+    pending = [t for t in state.training_queue if t != state.current_training_ticker]
+    
+    # Count currently training
+    training_count = 1 if state.current_training_ticker else 0
+    
     avg_duration = _average_training_duration()
     eta_seconds = None
-    if avg_duration and len(state.training_queue) > 0:
-        eta_seconds = int(avg_duration * len(state.training_queue))
-    return {"queue": state.training_queue, "eta_seconds": eta_seconds}
+    total_items = len(pending) + training_count
+    if avg_duration and total_items > 0:
+        eta_seconds = int(avg_duration * total_items)
+    
+    return {
+        "queue": pending,  # Return pending queue (not including current)
+        "current": state.current_training_ticker,  # Currently training
+        "count": total_items,  # Total items (current + pending)
+        "eta_seconds": eta_seconds
+    }
 
 @app.get("/api/models", response_model=List[ModelInfo])
 async def list_models():
@@ -408,8 +423,14 @@ def train_stock_task(ticker: str):
         def on_progress(epoch, total):
             state.training_progress[ticker] = round((epoch / total) * 100, 1)
 
-        # Train model
-        result = state.trainer.train_and_validate(df, ticker, progress_callback=on_progress)
+        # Train model with timeout safety
+        try:
+            result = state.trainer.train_and_validate(df, ticker, progress_callback=on_progress)
+        except Exception as train_err:
+            logger.error(f"Training error for {ticker}: {train_err}")
+            state.training_status[ticker] = "failed"
+            state.training_progress[ticker] = 0.0
+            return
         
         if result:
             state.training_status[ticker] = "completed"
@@ -430,9 +451,10 @@ def train_stock_task(ticker: str):
                 "class_accuracy": result.get("class_accuracy"),
                 "reg_mae": result.get("reg_mae")
             })
-            logger.info(f"✅ Completed training for {ticker}")
+            logger.info(f"✅ Completed training for {ticker} in {duration:.0f}s")
         else:
             state.training_status[ticker] = "failed"
+            state.training_progress[ticker] = 0.0
             duration = (datetime.now() - state.training_start[ticker]).total_seconds()
             state.training_history.append({
                 "ticker": ticker,
@@ -459,17 +481,27 @@ def train_stock_task(ticker: str):
 
 
 def process_training_queue():
-    """Process queued trainings sequentially"""
+    """Process queued trainings sequentially with proper state tracking"""
     if state.is_training:
-        return
+        return  # Already processing
+    
     state.is_training = True
     try:
         while state.training_queue:
             ticker = state.training_queue.pop(0)
+            state.current_training_ticker = ticker  # Track what we're training
             state.training_status[ticker] = "training"
-            train_stock_task(ticker)
+            try:
+                train_stock_task(ticker)
+            except Exception as e:
+                logger.error(f"Error training {ticker}: {e}")
+                state.training_status[ticker] = "failed"
+            finally:
+                state.current_training_ticker = None  # Clear when done
+    except Exception as e:
+        logger.error(f"Queue processing error: {e}")
     finally:
-        state.is_training = False
+        state.is_training = False  # Always reset flag
 
 @app.post("/api/train-batch")
 async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTasks = None):
