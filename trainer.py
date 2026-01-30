@@ -67,6 +67,19 @@ class ModelTrainer:
         """Build training/validation datasets"""
         df = self._add_features(df)
         
+        # Ensure Close column has no NaN/None values
+        if df['Close'].isna().any():
+            print(f"⚠️ Found {df['Close'].isna().sum()} NaN values in Close column, forward-filling")
+            df['Close'] = df['Close'].fillna(method='ffill').fillna(method='bfill')
+        
+        # Drop any remaining rows with NaN in critical columns
+        critical_cols = ['Close', 'High', 'Low']
+        df = df.dropna(subset=critical_cols)
+        
+        if df.empty or len(df) < self.lookback + 1:
+            print(f"⚠️ Not enough valid data after NaN removal: {len(df)} rows (need {self.lookback + 1})")
+            return None
+        
         # Feature columns
         feature_cols = ['Close', 'RSI', 'MACD', 'BB_High', 'BB_Low', 'ATR', 
                        'SMA_20', 'SMA_50', 'Returns', 'Volatility', 'High', 'Low']
@@ -80,10 +93,21 @@ class ModelTrainer:
         # Create sequences
         X_seq, y_class, y_reg = [], [], []
         for i in range(len(X_scaled) - self.lookback):
+            # Classification: 0=DOWN, 1=NEUTRAL, 2=UP
+            close_current = df['Close'].iloc[i]
+            close_future = df['Close'].iloc[i+self.lookback]
+            
+            # Defensive check for NaN/None
+            if pd.isna(close_current) or pd.isna(close_future):
+                continue
+            
+            future_return = (close_future - close_current) / close_current
+            if pd.isna(future_return) or not np.isfinite(future_return):
+                continue
+            
+            # Only add sequence if target is valid
             X_seq.append(X_scaled[i:i+self.lookback])
             
-            # Classification: 0=DOWN, 1=NEUTRAL, 2=UP
-            future_return = (df['Close'].iloc[i+self.lookback] - df['Close'].iloc[i]) / df['Close'].iloc[i]
             if future_return < -0.01:
                 label = 0  # DOWN
             elif future_return > 0.01:
@@ -92,6 +116,10 @@ class ModelTrainer:
                 label = 1  # NEUTRAL
             y_class.append(label)
             y_reg.append(future_return)
+        
+        if len(X_seq) < 50:
+            print(f"⚠️ Not enough valid sequences ({len(X_seq)}, need 50+)")
+            return None
         
         X_seq = np.array(X_seq)
         y_class = keras.utils.to_categorical(np.array(y_class), 3)
@@ -137,8 +165,12 @@ class ModelTrainer:
         print(f"\nTraining {ticker}...")
         
         # Build dataset
-        X_train, y_class_train, y_reg_train, X_val, y_class_val, y_reg_val = \
-            self._build_dataset(df)
+        result = self._build_dataset(df)
+        if result is None:
+            print(f"⚠️ Failed to build dataset for {ticker}")
+            return None
+        
+        X_train, y_class_train, y_reg_train, X_val, y_class_val, y_reg_val = result
         
         if len(X_train) < 50:
             print(f"⚠️ Insufficient data for {ticker} ({len(X_train)} samples)")

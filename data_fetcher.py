@@ -112,6 +112,7 @@ class CachedDataFetcher:
                 self.last_error = f"Stooq empty dataset for {ticker}"
                 self.logger.error(self.last_error)
                 return None
+            
             # Normalize columns to expected schema
             col_map = {c.lower(): c for c in df.columns}
             # Stooq uses: Date, Open, High, Low, Close, Volume
@@ -130,12 +131,28 @@ class CachedDataFetcher:
                     self.logger.error(self.last_error)
                     return None
 
-            # Clean data
-            df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            # Convert Date to datetime first
+            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+            
+            # Convert numeric columns
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            
+            # Remove rows with any NaN in price columns
+            df = df.dropna(subset=["Date", "Open", "High", "Low", "Close", "Volume"])
+            
+            if df.empty or len(df) < 100:
+                self.last_error = f"Stooq insufficient data for {ticker} (got {len(df)} rows)"
+                self.logger.error(self.last_error)
+                return None
+            
             df = df.sort_values("Date")
             # Provide Adj Close for compatibility
             if "Adj Close" not in df.columns:
                 df["Adj Close"] = df["Close"]
+            
+            self.logger.info(f"Stooq: {ticker} fetched {len(df)} rows")
             return df
         except Exception as e:
             self.last_error = f"Stooq fetch error for {ticker}: {e}"
@@ -238,21 +255,42 @@ class CachedDataFetcher:
                 self.last_error = f"Error fetching {ticker}: empty dataset"
                 self.logger.error(self.last_error)
                 return None
+            
             df = df.reset_index()
-            # Normalize dtypes
+            
+            # Normalize dtypes with aggressive validation
             if "Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-            for col in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+            
+            # Convert all numeric columns
+            numeric_cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+            for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors="coerce")
-            # Drop invalid rows
-            required_cols = [c for c in ["Open", "High", "Low", "Close"] if c in df.columns]
+            
+            # Drop rows with NaN in critical price columns
+            required_cols = ["Open", "High", "Low", "Close"]
+            required_cols = [c for c in required_cols if c in df.columns]
             if required_cols:
-                df = df.dropna(subset=required_cols)
+                df = df.dropna(subset=required_cols, how="any")
+            
+            # Drop rows with invalid Date
             if "Date" in df.columns:
                 df = df.dropna(subset=["Date"])
+            
+            # Final validation: ensure all prices are valid numbers
+            for col in required_cols:
+                if df[col].isna().any():
+                    self.logger.warning(f"Warning: {ticker} still has NaN in {col}, removing those rows")
+                    df = df[df[col].notna()]
+            
             if len(df) < 100:
                 self.logger.warning(f"Warning: {ticker} data length is low ({len(df)} rows)")
+            
+            if df.empty:
+                self.last_error = f"Error fetching {ticker}: all rows dropped during validation"
+                self.logger.error(self.last_error)
+                return None
             
             # Cache the data
             with open(cache_file, 'wb') as f:
