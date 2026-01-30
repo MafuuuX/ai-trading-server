@@ -204,9 +204,10 @@ class CachedDataFetcher:
         self.logger.info(f"Fetching {ticker}...")
         time.sleep(self.rate_limit_delay)
 
+        # Quick check for Yahoo availability
         ping_status = self._yahoo_ping()
         if ping_status == "down":
-            self.logger.warning(f"Yahoo down - using Stooq for {ticker}")
+            self.logger.info(f"Yahoo API is down - using Stooq for {ticker}")
             df = self._fetch_from_stooq(ticker)
             if df is not None and not df.empty:
                 with open(cache_file, 'wb') as f:
@@ -214,7 +215,7 @@ class CachedDataFetcher:
                 return df
             return None
         if ping_status == "rate_limited":
-            self.logger.warning(f"Yahoo rate limited - using Stooq for {ticker}")
+            self.logger.info(f"Yahoo rate limited - using Stooq for {ticker}")
             df = self._fetch_from_stooq(ticker)
             if df is not None and not df.empty:
                 with open(cache_file, 'wb') as f:
@@ -225,43 +226,48 @@ class CachedDataFetcher:
         
         try:
             df = None
+            last_error = None
             for attempt in range(1, self.max_retries + 1):
-                df = yf.download(
-                    ticker,
-                    period=period,
-                    interval="1d",
-                    auto_adjust=True,
-                    progress=False,
-                    threads=False,
-                    session=self.session
-                )
-                if df is None or df.empty or len(df) < 200:
-                    # Retry with longer period
+                try:
                     df = yf.download(
                         ticker,
-                        period="5y",
+                        period=period,
                         interval="1d",
                         auto_adjust=True,
                         progress=False,
                         threads=False,
                         session=self.session
                     )
-                if df is None or df.empty or len(df) < 200:
-                    # Final fallback
-                    try:
-                        df = yf.Ticker(ticker, session=self.session).history(period="max", auto_adjust=True)
-                    except Exception:
-                        df = None
+                    if df is None or df.empty or len(df) < 200:
+                        # Retry with longer period
+                        df = yf.download(
+                            ticker,
+                            period="5y",
+                            interval="1d",
+                            auto_adjust=True,
+                            progress=False,
+                            threads=False,
+                            session=self.session
+                        )
+                    if df is None or df.empty or len(df) < 200:
+                        # Final fallback
+                        try:
+                            df = yf.Ticker(ticker, session=self.session).history(period="max", auto_adjust=True)
+                        except Exception:
+                            df = None
 
-                if df is not None and not df.empty:
-                    break
+                    if df is not None and not df.empty and len(df) >= 100:
+                        break
+                except Exception as e:
+                    last_error = str(e)
+                    self.logger.warning(f"YFinance attempt {attempt} failed for {ticker}: {e}")
 
                 self.logger.warning(f"Retry {attempt}/{self.max_retries} for {ticker}")
                 time.sleep(self.retry_delay * attempt)
 
-            if df is None or df.empty:
-                # Final fallback to Stooq
-                self.logger.warning(f"Yahoo failed - fallback to Stooq for {ticker}")
+            if df is None or df.empty or len(df) < 100:
+                # All Yahoo attempts failed - use Stooq immediately
+                self.logger.warning(f"Yahoo failed for {ticker} (error: {last_error}) - trying Stooq")
                 df = self._fetch_from_stooq(ticker)
             if df is None or df.empty:
                 self.last_error = f"Error fetching {ticker}: empty dataset"
