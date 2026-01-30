@@ -6,13 +6,15 @@ import asyncio
 import os
 import json
 import hashlib
+import base64
+import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 import logging
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -33,6 +35,40 @@ app = FastAPI(title="AI Trading Server", version="1.0.0")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+# Basic Auth settings (set in environment)
+AUTH_USER = os.getenv("AI_TRADING_USER", "MafuuuX")
+AUTH_PASS = os.getenv("AI_TRADING_PASS", "Keanu!_203")
+
+
+def _unauthorized() -> Response:
+    return Response(
+        content="Unauthorized",
+        status_code=401,
+        headers={"WWW-Authenticate": "Basic realm=AI-Trading"},
+    )
+
+
+def _check_basic_auth(request: Request) -> bool:
+    auth = request.headers.get("Authorization")
+    if not auth or not auth.startswith("Basic "):
+        return False
+    try:
+        encoded = auth.split(" ", 1)[1]
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        username, password = decoded.split(":", 1)
+        return secrets.compare_digest(username, AUTH_USER) and secrets.compare_digest(password, AUTH_PASS)
+    except Exception:
+        return False
+
+
+@app.middleware("http")
+async def basic_auth_middleware(request: Request, call_next):
+    protected_prefixes = ("/ui", "/api", "/docs", "/redoc", "/openapi.json", "/static")
+    if request.url.path.startswith(protected_prefixes):
+        if not _check_basic_auth(request):
+            return _unauthorized()
+    return await call_next(request)
 
 # Global state
 class ServerState:
