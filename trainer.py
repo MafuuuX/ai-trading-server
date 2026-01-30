@@ -39,20 +39,35 @@ class ModelTrainer:
         if 'Volume' not in df.columns:
             df['Volume'] = df.get('Volume', df.get('volume', 1))
         
-        # Technical Indicators
-        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+        # Technical Indicators - using pandas/numpy instead of ta library for compatibility
+        
+        # RSI (Relative Strength Index)
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss.replace(0, 1e-10)
+        df['RSI'] = 100 - (100 / (1 + rs))
         
         # MACD - simplified calculation (EMA12 - EMA26)
         df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
         
-        bb = ta.volatility.bollinger_bands(df['Close'], window=20, window_dev=2)
-        df['BB_High'] = bb.iloc[:, 0]
-        df['BB_Low'] = bb.iloc[:, 1]
+        # Bollinger Bands
+        sma = df['Close'].rolling(window=20).mean()
+        std = df['Close'].rolling(window=20).std()
+        df['BB_High'] = sma + (std * 2)
+        df['BB_Low'] = sma - (std * 2)
         
-        df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+        # ATR (Average True Range)
+        high_low = df['High'] - df['Low']
+        high_close = abs(df['High'] - df['Close'].shift())
+        low_close = abs(df['Low'] - df['Close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        true_range = ranges.max(axis=1)
+        df['ATR'] = true_range.rolling(window=14).mean()
         
-        df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
-        df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
+        # SMA (Simple Moving Average)
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
         
         # Price changes
         df['Returns'] = df['Close'].pct_change()
