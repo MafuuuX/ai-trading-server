@@ -123,15 +123,25 @@ class CachedDataFetcher:
                 return None
             
             # Normalize columns to expected schema
-            col_map = {c.lower(): c for c in df.columns}
-            # Stooq uses: Date, Open, High, Low, Close, Volume
-            rename = {}
-            for key in ("date", "open", "high", "low", "close", "volume"):
-                if key in col_map:
-                    rename[col_map[key]] = key.capitalize()
-            if rename:
-                df.rename(columns=rename, inplace=True)
-                self.logger.info(f"Stooq: Renamed columns: {rename}")
+            # Stooq returns Polish column names: Data, Otwarcie, Najwyzszy, Najnizszy, Zamkniecie, Wolumen
+            polish_to_english = {
+                'Data': 'Date',
+                'Otwarcie': 'Open',
+                'Najwyzszy': 'High',
+                'Najnizszy': 'Low',
+                'Zamkniecie': 'Close',
+                'Wolumen': 'Volume'
+            }
+            
+            # Rename Polish columns to English
+            rename_map = {}
+            for col in df.columns:
+                if col in polish_to_english:
+                    rename_map[col] = polish_to_english[col]
+            
+            if rename_map:
+                df.rename(columns=rename_map, inplace=True)
+                self.logger.info(f"Stooq: Renamed Polish columns: {rename_map}")
 
             # Ensure required columns exist
             required = ["Date", "Open", "High", "Low", "Close", "Volume"]
