@@ -34,6 +34,18 @@ async function refreshHealth() {
   }
 }
 
+async function refreshMetrics() {
+  try {
+    const data = await fetchJson("/api/metrics");
+    document.getElementById("cpu").textContent = `${data.cpu_percent.toFixed(1)}%`;
+    const ramText = `${data.ram_percent.toFixed(1)}% (${formatBytes(data.ram_used)} / ${formatBytes(data.ram_total)})`;
+    document.getElementById("ram").textContent = ramText;
+  } catch (e) {
+    document.getElementById("cpu").textContent = "—";
+    document.getElementById("ram").textContent = "—";
+  }
+}
+
 async function refreshModels() {
   const tbody = document.getElementById("modelsTable");
   tbody.innerHTML = "<tr><td colspan='5'>Loading...</td></tr>";
@@ -51,6 +63,7 @@ async function refreshModels() {
         <td>${formatBytes(m.file_size)}</td>
         <td>
           <button class="secondary" onclick="trainTicker('${m.ticker}')">Train</button>
+          <button class="secondary" onclick="rollbackTicker('${m.ticker}')">Rollback</button>
         </td>
       </tr>
     `).join("");
@@ -83,12 +96,47 @@ async function refreshTraining() {
   }
 }
 
+async function refreshQueue() {
+  const queueEl = document.getElementById("queueList");
+  try {
+    const data = await fetchJson("/api/queue");
+    if (!data.queue.length) {
+      queueEl.textContent = "Queue is empty";
+      return;
+    }
+    queueEl.textContent = data.queue.join(", ");
+  } catch (e) {
+    queueEl.textContent = "Error loading queue";
+  }
+}
+
+async function refreshLogs() {
+  const logBox = document.getElementById("logBox");
+  try {
+    const data = await fetchJson("/api/logs");
+    const lines = data.logs.map(l => `[${l.time}] ${l.message}`).join("\n");
+    logBox.textContent = lines || "No logs";
+  } catch (e) {
+    logBox.textContent = "Error loading logs";
+  }
+}
+
 async function trainTicker(ticker) {
   try {
     await fetchJson(`/api/train/${ticker}`, { method: "POST" });
     await refreshTraining();
   } catch (e) {
     alert(`Training failed: ${e}`);
+  }
+}
+
+async function rollbackTicker(ticker) {
+  if (!confirm(`Rollback ${ticker} to latest backup?`)) return;
+  try {
+    await fetchJson(`/api/models/${ticker}/rollback`, { method: "POST" });
+    await refreshModels();
+  } catch (e) {
+    alert(`Rollback failed: ${e}`);
   }
 }
 
@@ -103,8 +151,11 @@ async function trainBatch() {
 
 async function refreshAll() {
   await refreshHealth();
+  await refreshMetrics();
   await refreshModels();
   await refreshTraining();
+  await refreshQueue();
+  await refreshLogs();
 }
 
 refreshAll();

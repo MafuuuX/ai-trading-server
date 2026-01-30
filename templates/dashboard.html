@@ -21,6 +21,14 @@
           <div id="uptime" class="value">—</div>
         </div>
         <div>
+          <div class="label">CPU</div>
+          <div id="cpu" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">RAM</div>
+          <div id="ram" class="value">—</div>
+        </div>
+        <div>
           <div class="label">Active Models</div>
           <div id="activeModels" class="value">—</div>
         </div>
@@ -56,6 +64,11 @@
     </section>
 
     <section class="card">
+      <h2>Training Queue</h2>
+      <div id="queueList" class="queue">Loading...</div>
+    </section>
+
+    <section class="card">
       <h2>Training Status</h2>
       <div class="table-wrapper">
         <table>
@@ -73,6 +86,11 @@
           </tbody>
         </table>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Server Logs</h2>
+      <pre id="logBox" class="logs">Loading...</pre>
     </section>
   </main>
 

@@ -13,6 +13,7 @@ import logging
 import base64
 import secrets
 import hmac
+import psutil
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -82,11 +83,16 @@ class ServerState:
     def __init__(self):
         self.models_dir = Path("./models")
         self.models_dir.mkdir(parents=True, exist_ok=True)
+        self.backup_dir = self.models_dir / "backups"
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         
         self.active_models = {}  # ticker -> model_version
         self.training_status = {}  # ticker -> status
+        self.training_queue = []  # list of tickers
+        self.is_training = False
         self.training_history = []
         self.last_training = {}
+        self.logs = []
         
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
@@ -96,6 +102,19 @@ class ServerState:
         self.startup_time = datetime.now()
 
 state = ServerState()
+
+
+class InMemoryLogHandler(logging.Handler):
+    def emit(self, record):
+        msg = self.format(record)
+        state.logs.append({"time": datetime.now().isoformat(), "message": msg})
+        if len(state.logs) > 200:
+            state.logs = state.logs[-200:]
+
+
+log_handler = InMemoryLogHandler()
+log_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+logger.addHandler(log_handler)
 
 # ============================================================================
 # DATA MODELS
@@ -145,6 +164,30 @@ async def health_check():
         "uptime_seconds": uptime
     }
 
+
+@app.get("/api/metrics")
+async def get_metrics():
+    """System metrics"""
+    mem = psutil.virtual_memory()
+    return {
+        "cpu_percent": psutil.cpu_percent(interval=0.2),
+        "ram_percent": mem.percent,
+        "ram_used": mem.used,
+        "ram_total": mem.total
+    }
+
+
+@app.get("/api/logs")
+async def get_logs():
+    """Recent server logs"""
+    return {"logs": state.logs}
+
+
+@app.get("/api/queue")
+async def get_queue():
+    """Current training queue"""
+    return {"queue": state.training_queue}
+
 @app.get("/api/models", response_model=List[ModelInfo])
 async def list_models():
     """List all available models"""
@@ -166,6 +209,29 @@ async def list_models():
         })
     
     return models
+
+
+@app.post("/api/models/{ticker}/rollback")
+async def rollback_model(ticker: str):
+    """Rollback to the latest backup for a ticker"""
+    ticker = ticker.upper()
+    ticker_backup_dir = state.backup_dir / ticker
+    if not ticker_backup_dir.exists():
+        raise HTTPException(status_code=404, detail="No backups available")
+    
+    backups = sorted(ticker_backup_dir.glob(f"{ticker}_model_*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)
+    scaler_backups = sorted(ticker_backup_dir.glob(f"{ticker}_scaler_*.pkl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not backups or not scaler_backups:
+        raise HTTPException(status_code=404, detail="No valid backup pair found")
+    
+    # Restore latest
+    model_path = state.models_dir / f"{ticker}_model.h5"
+    scaler_path = state.models_dir / f"{ticker}_scaler.pkl"
+    backups[0].replace(model_path)
+    scaler_backups[0].replace(scaler_path)
+    
+    logger.info(f"Rolled back {ticker} to latest backup")
+    return {"status": "rolled_back", "ticker": ticker}
 
 @app.get("/api/training-status", response_model=Dict[str, TrainingStatus])
 async def training_status():
@@ -249,15 +315,17 @@ async def train_stock(ticker: str, background_tasks: BackgroundTasks):
     """Start training for a specific stock"""
     ticker = ticker.upper()
     
-    if state.training_status.get(ticker) == "training":
+    if state.training_status.get(ticker) in ("training", "queued"):
         raise HTTPException(status_code=409, detail=f"{ticker} already training")
     
-    state.training_status[ticker] = "training"
-    background_tasks.add_task(train_stock_task, ticker)
+    state.training_status[ticker] = "queued"
+    if ticker not in state.training_queue:
+        state.training_queue.append(ticker)
+    background_tasks.add_task(process_training_queue)
     
-    return {"status": "training started", "ticker": ticker}
+    return {"status": "queued", "ticker": ticker}
 
-async def train_stock_task(ticker: str):
+def train_stock_task(ticker: str):
     """Background task to train a stock"""
     try:
         logger.info(f"Starting training for {ticker}...")
@@ -285,6 +353,20 @@ async def train_stock_task(ticker: str):
         state.training_status[ticker] = "failed"
         logger.error(f"Error training {ticker}: {e}")
 
+
+def process_training_queue():
+    """Process queued trainings sequentially"""
+    if state.is_training:
+        return
+    state.is_training = True
+    try:
+        while state.training_queue:
+            ticker = state.training_queue.pop(0)
+            state.training_status[ticker] = "training"
+            train_stock_task(ticker)
+    finally:
+        state.is_training = False
+
 @app.post("/api/train-batch")
 async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTasks = None):
     """Start training for multiple stocks"""
@@ -292,12 +374,14 @@ async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTas
         tickers = TOP_STOCKS[:10]  # Default first 10
     
     for ticker in tickers:
-        if state.training_status.get(ticker) != "training":
+        if state.training_status.get(ticker) not in ("training", "queued"):
             state.training_status[ticker] = "queued"
-            if background_tasks:
-                background_tasks.add_task(train_stock_task, ticker)
+            if ticker not in state.training_queue:
+                state.training_queue.append(ticker)
+    if background_tasks:
+        background_tasks.add_task(process_training_queue)
     
-    return {"status": "batch training started", "count": len(tickers)}
+    return {"status": "batch queued", "count": len(tickers)}
 
 # ============================================================================
 # SCHEDULER SETUP
@@ -320,11 +404,11 @@ async def train_end_of_day():
     logger.info(f"Starting end-of-day training for {len(TOP_STOCKS)} stocks...")
     
     for ticker in TOP_STOCKS[:20]:  # Start with first 20 for testing
-        if state.training_status.get(ticker) != "training":
-            try:
-                await train_stock_task(ticker)
-            except Exception as e:
-                logger.error(f"Error in end-of-day training for {ticker}: {e}")
+        if state.training_status.get(ticker) not in ("training", "queued"):
+            state.training_status[ticker] = "queued"
+            if ticker not in state.training_queue:
+                state.training_queue.append(ticker)
+    process_training_queue()
 
 # ============================================================================
 # STARTUP & SHUTDOWN

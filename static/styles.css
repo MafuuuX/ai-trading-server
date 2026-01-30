@@ -92,3 +92,21 @@ table {
 }
 th, td { padding: 10px; border-bottom: 1px solid #22283a; text-align: left; }
 tr:hover { background: #101521; }
+
+.queue {
+  background: #0f1117;
+  border: 1px solid #22283a;
+  padding: 10px;
+  border-radius: 6px;
+  color: #cbd5e1;
+}
+
+.logs {
+  background: #0f1117;
+  border: 1px solid #22283a;
+  padding: 10px;
+  border-radius: 6px;
+  color: #cbd5e1;
+  max-height: 300px;
+  overflow: auto;
+}

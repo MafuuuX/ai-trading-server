@@ -21,6 +21,8 @@ class ModelTrainer:
     def __init__(self, model_dir: str = './models', lookback: int = 30):
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.backup_dir = self.model_dir / "backups"
+        self.backup_dir.mkdir(parents=True, exist_ok=True)
         self.lookback = lookback
         self.scaler = None
         
@@ -177,11 +179,24 @@ class ModelTrainer:
         # Evaluate
         val_results = model.evaluate(X_val, [y_class_val, y_reg_val], verbose=0)
         
-        # Save model and scaler
+        # Save model and scaler (with backup)
         model_path = self.model_dir / f"{ticker}_model.h5"
-        model.save(str(model_path))
-        
         scaler_path = self.model_dir / f"{ticker}_scaler.pkl"
+
+        # Backup existing files
+        if model_path.exists() or scaler_path.exists():
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ticker_backup_dir = self.backup_dir / ticker
+            ticker_backup_dir.mkdir(parents=True, exist_ok=True)
+            
+            if model_path.exists():
+                backup_model = ticker_backup_dir / f"{ticker}_model_{ts}.h5"
+                model_path.replace(backup_model)
+            if scaler_path.exists():
+                backup_scaler = ticker_backup_dir / f"{ticker}_scaler_{ts}.pkl"
+                scaler_path.replace(backup_scaler)
+        
+        model.save(str(model_path))
         joblib.dump(self.scaler, str(scaler_path))
         
         print(f"✅ {ticker} trained - Val Loss: {val_results[0]:.4f}")
