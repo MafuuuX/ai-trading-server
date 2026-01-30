@@ -176,13 +176,25 @@ class CachedDataFetcher:
         """Fetch or return cached historical data"""
         cache_file = self._get_cache_file(ticker)
         
-        # Check cache first
+        # Check cache first - but also validate cached data integrity
         if self._is_cache_valid(ticker):
-            with open(cache_file, 'rb') as f:
-                cached = pickle.load(f)
-                if cached is not None and not cached.empty:
-                    return cached
-                # Cached data is empty -> refetch
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached = pickle.load(f)
+                    # Validate cached dataframe
+                    if cached is not None and not cached.empty:
+                        # Check if cached data is valid (no None in Close)
+                        if 'Close' in cached.columns and not cached['Close'].isna().all():
+                            return cached
+                        else:
+                            self.logger.warning(f"Cached data for {ticker} is invalid (all NaN or None in Close), refetching")
+                # Cached data is empty or invalid -> refetch
+                try:
+                    cache_file.unlink()
+                except Exception:
+                    pass
+            except Exception as e:
+                self.logger.warning(f"Error loading cache for {ticker}: {e}, refetching")
                 try:
                     cache_file.unlink()
                 except Exception:

@@ -425,6 +425,7 @@ def train_stock_task(ticker: str):
             logger.error(f"Training failed for {ticker}")
             
     except Exception as e:
+        import traceback
         state.training_status[ticker] = "failed"
         duration = (datetime.now() - state.training_start[ticker]).total_seconds() if ticker in state.training_start else None
         state.training_history.append({
@@ -434,7 +435,9 @@ def train_stock_task(ticker: str):
             "trained_at": datetime.now().isoformat(),
             "error": str(e)
         })
+        # Log with full traceback
         logger.error(f"Error training {ticker}: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 def process_training_queue():
