@@ -37,11 +37,13 @@ class ServerState:
         self.training_status = {}  # ticker -> status
         self.training_history = []
         self.last_training = {}
-        self.startup_time = datetime.now()
         
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
         self.trainer = ModelTrainer()
+        
+        # Track startup time for uptime calculation
+        self.startup_time = datetime.now()
 
 state = ServerState()
 
