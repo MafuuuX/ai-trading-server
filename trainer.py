@@ -42,8 +42,8 @@ class ModelTrainer:
         # Technical Indicators
         df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
         
-        macd = ta.trend.macd(df['Close'], window_fast=12, window_slow=26, window_signal=9)
-        df['MACD'] = macd
+        # MACD - simplified calculation (EMA12 - EMA26)
+        df['MACD'] = df['Close'].ewm(span=12, adjust=False).mean() - df['Close'].ewm(span=26, adjust=False).mean()
         
         bb = ta.volatility.bollinger_bands(df['Close'], window=20, window_dev=2)
         df['BB_High'] = bb.iloc[:, 0]
