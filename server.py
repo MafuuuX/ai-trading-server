@@ -273,6 +273,10 @@ async def rollback_model(ticker: str):
 async def training_status():
     """Get training status for all stocks"""
     status_dict = {}
+    next_run = None
+    job = state.scheduler.get_job('daily_training') if state.scheduler else None
+    if job and job.next_run_time:
+        next_run = job.next_run_time.isoformat()
     
     for ticker in TOP_STOCKS[:20]:  # Return status for first 20
         status_dict[ticker] = {
@@ -280,7 +284,7 @@ async def training_status():
             "status": state.training_status.get(ticker, "idle"),
             "progress": state.training_progress.get(ticker, 0.0),
             "last_trained": state.last_training.get(ticker),
-            "next_training": (datetime.now() + timedelta(hours=1)).isoformat()
+            "next_training": next_run
         }
     
     return status_dict
