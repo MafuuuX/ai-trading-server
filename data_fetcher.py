@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import pickle
 from pathlib import Path
 import time
+import logging
 
 # Top 135 stocks across all market caps
 TOP_STOCKS = [
@@ -61,6 +62,8 @@ class CachedDataFetcher:
         self.session = requests.Session()
         self._last_ping = None
         self._ping_ttl = 60  # seconds
+        self.last_error = None
+        self.logger = logging.getLogger(__name__)
 
     def _yahoo_ping(self) -> bool:
         """Check basic connectivity to Yahoo endpoints"""
@@ -75,10 +78,12 @@ class CachedDataFetcher:
             if resp.status_code == 200:
                 self._last_ping = now
                 return True
-            print(f"Yahoo ping failed: HTTP {resp.status_code}")
+            self.last_error = f"Yahoo ping failed: HTTP {resp.status_code}"
+            self.logger.error(self.last_error)
             return False
         except Exception as e:
-            print(f"Yahoo ping error: {e}")
+            self.last_error = f"Yahoo ping error: {e}"
+            self.logger.error(self.last_error)
             return False
         
     def _get_cache_file(self, ticker: str) -> Path:
@@ -111,11 +116,12 @@ class CachedDataFetcher:
                     pass
         
         # Fetch fresh data
-        print(f"Fetching {ticker}...")
+        self.logger.info(f"Fetching {ticker}...")
         time.sleep(self.rate_limit_delay)
 
         if not self._yahoo_ping():
-            print(f"Error fetching {ticker}: Yahoo endpoint not reachable")
+            self.last_error = f"Yahoo endpoint not reachable for {ticker}"
+            self.logger.error(self.last_error)
             return None
         
         try:
@@ -146,11 +152,12 @@ class CachedDataFetcher:
                 except Exception:
                     df = None
             if df is None or df.empty:
-                print(f"Error fetching {ticker}: empty dataset")
+                self.last_error = f"Error fetching {ticker}: empty dataset"
+                self.logger.error(self.last_error)
                 return None
             df = df.reset_index()
             if len(df) < 100:
-                print(f"Warning: {ticker} data length is low ({len(df)} rows)")
+                self.logger.warning(f"Warning: {ticker} data length is low ({len(df)} rows)")
             
             # Cache the data
             with open(cache_file, 'wb') as f:
@@ -158,7 +165,8 @@ class CachedDataFetcher:
             
             return df
         except Exception as e:
-            print(f"Error fetching {ticker}: {e}")
+            self.last_error = f"Error fetching {ticker}: {e}"
+            self.logger.error(self.last_error)
             return None
     
     def fetch_batch(self, tickers: list = None, period: str = "2y") -> dict:

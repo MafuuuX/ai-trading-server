@@ -376,7 +376,11 @@ def train_stock_task(ticker: str):
         df = state.fetcher.fetch_historical_data(ticker)
         if df is None:
             state.training_status[ticker] = "failed"
-            logger.error(f"Insufficient data for {ticker}: df is None")
+            reason = getattr(state.fetcher, "last_error", None)
+            if reason:
+                logger.error(f"Insufficient data for {ticker}: {reason}")
+            else:
+                logger.error(f"Insufficient data for {ticker}: df is None")
             return
         if len(df) < 100:
             state.training_status[ticker] = "failed"
