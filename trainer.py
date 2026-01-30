@@ -42,7 +42,7 @@ class ModelTrainer:
         # Technical Indicators
         df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
         
-        macd = ta.trend.macd(df['Close'], window_fast=12, window_slow=26, window_sign=9)
+        macd = ta.trend.macd(df['Close'], window_fast=12, window_slow=26, window_signal=9)
         df['MACD'] = macd
         
         bb = ta.volatility.bollinger_bands(df['Close'], window=20, window_dev=2)
