@@ -58,18 +58,20 @@ class CachedDataFetcher:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_hours = cache_hours
-        self.rate_limit_delay = 0.5  # seconds between requests
+        self.rate_limit_delay = 1.5  # seconds between requests (avoid 429)
         self.session = requests.Session()
         self._last_ping = None
         self._ping_ttl = 60  # seconds
         self.last_error = None
         self.logger = logging.getLogger(__name__)
+        self.max_retries = 3
+        self.retry_delay = 5  # seconds
 
-    def _yahoo_ping(self) -> bool:
+    def _yahoo_ping(self) -> str:
         """Check basic connectivity to Yahoo endpoints"""
         now = time.time()
         if self._last_ping and (now - self._last_ping) < self._ping_ttl:
-            return True
+            return "ok"
         try:
             resp = self.session.get(
                 "https://query1.finance.yahoo.com/v7/finance/quote?symbols=AAPL",
@@ -77,14 +79,18 @@ class CachedDataFetcher:
             )
             if resp.status_code == 200:
                 self._last_ping = now
-                return True
+                return "ok"
+            if resp.status_code == 429:
+                self.last_error = "Yahoo rate limited (HTTP 429)"
+                self.logger.warning(self.last_error)
+                return "rate_limited"
             self.last_error = f"Yahoo ping failed: HTTP {resp.status_code}"
             self.logger.error(self.last_error)
-            return False
+            return "down"
         except Exception as e:
             self.last_error = f"Yahoo ping error: {e}"
             self.logger.error(self.last_error)
-            return False
+            return "down"
         
     def _get_cache_file(self, ticker: str) -> Path:
         """Get cache file path for ticker"""
@@ -119,38 +125,51 @@ class CachedDataFetcher:
         self.logger.info(f"Fetching {ticker}...")
         time.sleep(self.rate_limit_delay)
 
-        if not self._yahoo_ping():
+        ping_status = self._yahoo_ping()
+        if ping_status == "down":
             self.last_error = f"Yahoo endpoint not reachable for {ticker}"
             self.logger.error(self.last_error)
             return None
+        if ping_status == "rate_limited":
+            self.logger.warning(f"Rate limited - backing off before fetching {ticker}")
+            time.sleep(self.retry_delay)
         
         try:
-            df = yf.download(
-                ticker,
-                period=period,
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-                threads=False,
-                session=self.session
-            )
-            if df is None or df.empty or len(df) < 200:
-                # Retry with longer period
+            df = None
+            for attempt in range(1, self.max_retries + 1):
                 df = yf.download(
                     ticker,
-                    period="5y",
+                    period=period,
                     interval="1d",
                     auto_adjust=True,
                     progress=False,
                     threads=False,
                     session=self.session
                 )
-            if df is None or df.empty or len(df) < 200:
-                # Final fallback
-                try:
-                    df = yf.Ticker(ticker, session=self.session).history(period="max", auto_adjust=True)
-                except Exception:
-                    df = None
+                if df is None or df.empty or len(df) < 200:
+                    # Retry with longer period
+                    df = yf.download(
+                        ticker,
+                        period="5y",
+                        interval="1d",
+                        auto_adjust=True,
+                        progress=False,
+                        threads=False,
+                        session=self.session
+                    )
+                if df is None or df.empty or len(df) < 200:
+                    # Final fallback
+                    try:
+                        df = yf.Ticker(ticker, session=self.session).history(period="max", auto_adjust=True)
+                    except Exception:
+                        df = None
+
+                if df is not None and not df.empty:
+                    break
+
+                self.logger.warning(f"Retry {attempt}/{self.max_retries} for {ticker}")
+                time.sleep(self.retry_delay * attempt)
+
             if df is None or df.empty:
                 self.last_error = f"Error fetching {ticker}: empty dataset"
                 self.logger.error(self.last_error)
