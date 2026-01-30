@@ -27,6 +27,17 @@ import pandas as pd
 from data_fetcher import CachedDataFetcher, TOP_STOCKS
 from trainer import ModelTrainer
 
+# Sector mapping for Train Sector
+SECTORS = {
+    "Mega Cap": ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA'],
+    "Tech": ['GOOG', 'AVGO', 'ORCL', 'INTC', 'AMD', 'NFLX', 'CRM', 'ADBE', 'IBM', 'CSCO', 'QCOM', 'TXN'],
+    "Finance": ['JPM', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'SCHW', 'COIN', 'V', 'MA', 'AXP'],
+    "Healthcare": ['UNH', 'JNJ', 'LLY', 'MRK', 'PFE', 'ABBV', 'TMO', 'AMGN'],
+    "Energy": ['CVX', 'XOM', 'COP', 'MPC', 'PSX', 'VLO', 'HES', 'SLB'],
+    "Consumer": ['MCD', 'SBUX', 'NKE', 'LULU', 'WMT', 'KO', 'PEP', 'HD'],
+    "ETFs": ['SPY', 'QQQ', 'IWM', 'EEM', 'XLK', 'XLV', 'XLF', 'XLE']
+}
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +101,9 @@ class ServerState:
         self.training_status = {}  # ticker -> status
         self.training_queue = []  # list of tickers
         self.is_training = False
+        self.training_progress = {}  # ticker -> 0-100
+        self.training_start = {}  # ticker -> datetime
+        self.training_metrics = {}  # ticker -> metrics
         self.training_history = []
         self.last_training = {}
         self.logs = []
@@ -177,6 +191,24 @@ async def get_metrics():
     }
 
 
+@app.get("/api/sectors")
+async def get_sectors():
+    """List available sectors"""
+    return {"sectors": list(SECTORS.keys())}
+
+
+@app.get("/api/performance")
+async def get_performance():
+    """Latest model performance per ticker"""
+    return {"performance": state.training_metrics}
+
+
+@app.get("/api/training-history")
+async def get_training_history():
+    """Training history timeline"""
+    return {"history": state.training_history[-100:]}
+
+
 @app.get("/api/logs")
 async def get_logs():
     """Recent server logs"""
@@ -186,7 +218,11 @@ async def get_logs():
 @app.get("/api/queue")
 async def get_queue():
     """Current training queue"""
-    return {"queue": state.training_queue}
+    avg_duration = _average_training_duration()
+    eta_seconds = None
+    if avg_duration and len(state.training_queue) > 0:
+        eta_seconds = int(avg_duration * len(state.training_queue))
+    return {"queue": state.training_queue, "eta_seconds": eta_seconds}
 
 @app.get("/api/models", response_model=List[ModelInfo])
 async def list_models():
@@ -242,7 +278,7 @@ async def training_status():
         status_dict[ticker] = {
             "ticker": ticker,
             "status": state.training_status.get(ticker, "idle"),
-            "progress": 0.0,
+            "progress": state.training_progress.get(ticker, 0.0),
             "last_trained": state.last_training.get(ticker),
             "next_training": (datetime.now() + timedelta(hours=1)).isoformat()
         }
@@ -329,6 +365,8 @@ def train_stock_task(ticker: str):
     """Background task to train a stock"""
     try:
         logger.info(f"Starting training for {ticker}...")
+        state.training_start[ticker] = datetime.now()
+        state.training_progress[ticker] = 0.0
         
         # Fetch data
         df = state.fetcher.fetch_historical_data(ticker)
@@ -337,20 +375,53 @@ def train_stock_task(ticker: str):
             logger.error(f"Insufficient data for {ticker}")
             return
         
+        # Progress callback
+        def on_progress(epoch, total):
+            state.training_progress[ticker] = round((epoch / total) * 100, 1)
+
         # Train model
-        result = state.trainer.train_and_validate(df, ticker)
+        result = state.trainer.train_and_validate(df, ticker, progress_callback=on_progress)
         
         if result:
             state.training_status[ticker] = "completed"
             state.last_training[ticker] = datetime.now().isoformat()
             state.active_models[ticker] = "v1"
+            state.training_metrics[ticker] = {
+                "class_accuracy": result.get("class_accuracy"),
+                "reg_mae": result.get("reg_mae"),
+                "trained_at": result.get("trained_at")
+            }
+            duration = (datetime.now() - state.training_start[ticker]).total_seconds()
+            state.training_history.append({
+                "ticker": ticker,
+                "status": "completed",
+                "duration_seconds": duration,
+                "trained_at": state.last_training[ticker],
+                "class_accuracy": result.get("class_accuracy"),
+                "reg_mae": result.get("reg_mae")
+            })
             logger.info(f"✅ Completed training for {ticker}")
         else:
             state.training_status[ticker] = "failed"
+            duration = (datetime.now() - state.training_start[ticker]).total_seconds()
+            state.training_history.append({
+                "ticker": ticker,
+                "status": "failed",
+                "duration_seconds": duration,
+                "trained_at": datetime.now().isoformat()
+            })
             logger.error(f"Training failed for {ticker}")
             
     except Exception as e:
         state.training_status[ticker] = "failed"
+        duration = (datetime.now() - state.training_start[ticker]).total_seconds() if ticker in state.training_start else None
+        state.training_history.append({
+            "ticker": ticker,
+            "status": "failed",
+            "duration_seconds": duration,
+            "trained_at": datetime.now().isoformat(),
+            "error": str(e)
+        })
         logger.error(f"Error training {ticker}: {e}")
 
 
@@ -382,6 +453,40 @@ async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTas
         background_tasks.add_task(process_training_queue)
     
     return {"status": "batch queued", "count": len(tickers)}
+
+
+@app.post("/api/train-all")
+async def train_all(background_tasks: BackgroundTasks):
+    """Queue training for all stocks"""
+    for ticker in TOP_STOCKS:
+        if state.training_status.get(ticker) not in ("training", "queued"):
+            state.training_status[ticker] = "queued"
+            if ticker not in state.training_queue:
+                state.training_queue.append(ticker)
+    background_tasks.add_task(process_training_queue)
+    return {"status": "all queued", "count": len(TOP_STOCKS)}
+
+
+@app.post("/api/train-sector/{sector}")
+async def train_sector(sector: str, background_tasks: BackgroundTasks):
+    """Queue training for a sector"""
+    if sector not in SECTORS:
+        raise HTTPException(status_code=404, detail="Sector not found")
+    tickers = SECTORS[sector]
+    for ticker in tickers:
+        if state.training_status.get(ticker) not in ("training", "queued"):
+            state.training_status[ticker] = "queued"
+            if ticker not in state.training_queue:
+                state.training_queue.append(ticker)
+    background_tasks.add_task(process_training_queue)
+    return {"status": "sector queued", "sector": sector, "count": len(tickers)}
+
+
+def _average_training_duration() -> Optional[float]:
+    durations = [h["duration_seconds"] for h in state.training_history if h.get("duration_seconds")]
+    if not durations:
+        return None
+    return sum(durations) / len(durations)
 
 # ============================================================================
 # SCHEDULER SETUP

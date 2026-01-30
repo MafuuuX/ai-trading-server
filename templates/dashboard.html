@@ -40,6 +40,9 @@
       <div class="actions">
         <button onclick="refreshAll()">Refresh</button>
         <button class="secondary" onclick="trainBatch()">Train Batch (Top 10)</button>
+        <button class="secondary" onclick="trainAll()">Train All</button>
+        <select id="sectorSelect"></select>
+        <button class="secondary" onclick="trainSector()">Train Sector</button>
       </div>
     </section>
 
@@ -64,8 +67,16 @@
     </section>
 
     <section class="card">
+      <h2>Model Performance</h2>
+      <div id="performanceGrid" class="grid"></div>
+    </section>
+
+    <section class="card">
       <h2>Training Queue</h2>
-      <div id="queueList" class="queue">Loading...</div>
+      <div class="queue">
+        <div id="queueList">Loading...</div>
+        <div id="queueEta" class="eta">ETA: —</div>
+      </div>
     </section>
 
     <section class="card">
@@ -76,6 +87,7 @@
             <tr>
               <th>Ticker</th>
               <th>Status</th>
+              <th>Progress</th>
               <th>Last Trained</th>
               <th>Next Training</th>
               <th>Action</th>
@@ -86,6 +98,11 @@
           </tbody>
         </table>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Training History</h2>
+      <div id="historyList" class="timeline">Loading...</div>
     </section>
 
     <section class="card">

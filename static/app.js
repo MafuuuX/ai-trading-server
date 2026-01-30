@@ -86,6 +86,12 @@ async function refreshTraining() {
       <tr>
         <td>${r.ticker}</td>
         <td>${r.status}</td>
+        <td>
+          <div class="progress">
+            <div class="bar" style="width:${r.progress || 0}%"></div>
+          </div>
+          <div class="progress-text">${r.progress || 0}%</div>
+        </td>
         <td>${formatTime(r.last_trained)}</td>
         <td>${formatTime(r.next_training)}</td>
         <td><button class="secondary" onclick="trainTicker('${r.ticker}')">Train</button></td>
@@ -98,15 +104,24 @@ async function refreshTraining() {
 
 async function refreshQueue() {
   const queueEl = document.getElementById("queueList");
+  const etaEl = document.getElementById("queueEta");
   try {
     const data = await fetchJson("/api/queue");
     if (!data.queue.length) {
       queueEl.textContent = "Queue is empty";
+      etaEl.textContent = "ETA: —";
       return;
     }
     queueEl.textContent = data.queue.join(", ");
+    if (data.eta_seconds) {
+      const mins = Math.ceil(data.eta_seconds / 60);
+      etaEl.textContent = `ETA: ~${mins} min`;
+    } else {
+      etaEl.textContent = "ETA: —";
+    }
   } catch (e) {
     queueEl.textContent = "Error loading queue";
+    etaEl.textContent = "ETA: —";
   }
 }
 
@@ -118,6 +133,61 @@ async function refreshLogs() {
     logBox.textContent = lines || "No logs";
   } catch (e) {
     logBox.textContent = "Error loading logs";
+  }
+}
+
+async function refreshPerformance() {
+  const grid = document.getElementById("performanceGrid");
+  try {
+    const data = await fetchJson("/api/performance");
+    const perf = data.performance || {};
+    const entries = Object.entries(perf);
+    if (!entries.length) {
+      grid.innerHTML = "No performance data";
+      return;
+    }
+    grid.innerHTML = entries.map(([ticker, m]) => `
+      <div class="perf-card">
+        <div class="label">${ticker}</div>
+        <div class="value">Acc: ${(m.class_accuracy * 100 || 0).toFixed(1)}%</div>
+        <div class="value">MAE: ${(m.reg_mae || 0).toFixed(4)}</div>
+      </div>
+    `).join("");
+  } catch (e) {
+    grid.innerHTML = "Error loading performance";
+  }
+}
+
+async function refreshHistory() {
+  const list = document.getElementById("historyList");
+  try {
+    const data = await fetchJson("/api/training-history");
+    const items = data.history || [];
+    if (!items.length) {
+      list.textContent = "No history";
+      return;
+    }
+    list.innerHTML = items.map(h => `
+      <div class="timeline-item">
+        <div class="timeline-title">${h.ticker} · ${h.status}</div>
+        <div class="timeline-meta">
+          ${formatTime(h.trained_at)} · ${(h.duration_seconds || 0).toFixed(0)}s · Acc: ${(h.class_accuracy * 100 || 0).toFixed(1)}% · MAE: ${(h.reg_mae || 0).toFixed(4)}
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    list.textContent = "Error loading history";
+  }
+}
+
+async function loadSectors() {
+  const select = document.getElementById("sectorSelect");
+  try {
+    const data = await fetchJson("/api/sectors");
+    const sectors = data.sectors || [];
+    select.innerHTML = sectors.map(s => `<option value="${s}">${s}</option>`).join("");
+  } catch (e) {
+    select.innerHTML = "<option>Error</option>";
   }
 }
 
@@ -149,6 +219,29 @@ async function trainBatch() {
   }
 }
 
+async function trainAll() {
+  if (!confirm("Queue training for ALL tickers?")) return;
+  try {
+    await fetchJson(`/api/train-all`, { method: "POST" });
+    await refreshTraining();
+    await refreshQueue();
+  } catch (e) {
+    alert(`Train all failed: ${e}`);
+  }
+}
+
+async function trainSector() {
+  const sector = document.getElementById("sectorSelect").value;
+  if (!sector) return;
+  try {
+    await fetchJson(`/api/train-sector/${encodeURIComponent(sector)}`, { method: "POST" });
+    await refreshTraining();
+    await refreshQueue();
+  } catch (e) {
+    alert(`Train sector failed: ${e}`);
+  }
+}
+
 async function refreshAll() {
   await refreshHealth();
   await refreshMetrics();
@@ -156,7 +249,10 @@ async function refreshAll() {
   await refreshTraining();
   await refreshQueue();
   await refreshLogs();
+  await refreshPerformance();
+  await refreshHistory();
 }
 
+loadSectors();
 refreshAll();
 setInterval(refreshAll, 15000);

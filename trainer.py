@@ -9,7 +9,7 @@ from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Input, Model
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, Callback
 import ta
 import joblib
 from pathlib import Path
@@ -132,7 +132,7 @@ class ModelTrainer:
         model = Model(inputs=inputs, outputs=[class_out, reg_out])
         return model
     
-    def train_and_validate(self, df: pd.DataFrame, ticker: str, epochs: int = 50) -> dict:
+    def train_and_validate(self, df: pd.DataFrame, ticker: str, epochs: int = 50, progress_callback=None) -> dict:
         """Train model and return validation metrics"""
         print(f"\nTraining {ticker}...")
         
@@ -160,11 +160,25 @@ class ModelTrainer:
             loss_weights={'classifier': 0.7, 'regressor': 0.3}
         )
         
+        # Progress callback
+        if progress_callback:
+            class ProgressCallback(Callback):
+                def on_epoch_end(self, epoch, logs=None):
+                    try:
+                        progress_callback(epoch + 1, epochs)
+                    except Exception:
+                        pass
+            progress_cb = ProgressCallback()
+        else:
+            progress_cb = None
+
         # Callbacks
         callbacks = [
             EarlyStopping(monitor='val_classifier_loss', patience=10, restore_best_weights=True),
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7)
         ]
+        if progress_cb:
+            callbacks.append(progress_cb)
         
         # Train
         history = model.fit(
