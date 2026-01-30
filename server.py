@@ -6,6 +6,7 @@ import asyncio
 import os
 import json
 import hashlib
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -271,14 +272,24 @@ async def rollback_model(ticker: str):
 
 @app.get("/api/training-status", response_model=Dict[str, TrainingStatus])
 async def training_status():
-    """Get training status for all stocks"""
+    """Get training status for all stocks - cached for 2 seconds"""
+    # Simple cache to avoid re-computing this every request
+    current_time = time.time()
+    if hasattr(state, '_status_cache') and hasattr(state, '_status_cache_time'):
+        if current_time - state._status_cache_time < 2:  # Cache for 2 seconds
+            return state._status_cache
+    
     status_dict = {}
     next_run = None
     job = state.scheduler.get_job('daily_training') if state.scheduler else None
     if job and job.next_run_time:
         next_run = job.next_run_time.isoformat()
     
-    for ticker in TOP_STOCKS[:20]:  # Return status for first 20
+    # Only return status for stocks that have been queued or trained
+    # This is much faster than iterating all 135 stocks every time
+    active_tickers = set(state.training_status.keys()) | set(state.last_training.keys())
+    
+    for ticker in active_tickers:
         status_dict[ticker] = {
             "ticker": ticker,
             "status": state.training_status.get(ticker, "idle"),
@@ -286,6 +297,10 @@ async def training_status():
             "last_trained": state.last_training.get(ticker),
             "next_training": next_run
         }
+    
+    # Cache the result
+    state._status_cache = status_dict
+    state._status_cache_time = current_time
     
     return status_dict
 
@@ -376,6 +391,7 @@ def train_stock_task(ticker: str):
         df = state.fetcher.fetch_historical_data(ticker)
         if df is None:
             state.training_status[ticker] = "failed"
+            state.training_progress[ticker] = 0.0
             reason = getattr(state.fetcher, "last_error", None)
             if reason:
                 logger.error(f"Insufficient data for {ticker}: {reason}")
@@ -384,6 +400,7 @@ def train_stock_task(ticker: str):
             return
         if len(df) < 100:
             state.training_status[ticker] = "failed"
+            state.training_progress[ticker] = 0.0
             logger.error(f"Insufficient data for {ticker}: {len(df)} rows")
             return
         
@@ -396,6 +413,7 @@ def train_stock_task(ticker: str):
         
         if result:
             state.training_status[ticker] = "completed"
+            state.training_progress[ticker] = 100.0  # Set to 100% when completed
             state.last_training[ticker] = datetime.now().isoformat()
             state.active_models[ticker] = "v1"
             state.training_metrics[ticker] = {

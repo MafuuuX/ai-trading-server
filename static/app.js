@@ -34,110 +34,173 @@ async function refreshHealth() {
   }
 }
 
+let lastMetrics = {};
 async function refreshMetrics() {
   try {
     const data = await fetchJson("/api/metrics");
-    document.getElementById("cpu").textContent = `${data.cpu_percent.toFixed(1)}%`;
+    const cpuText = `${data.cpu_percent.toFixed(1)}%`;
     const ramText = `${data.ram_percent.toFixed(1)}% (${formatBytes(data.ram_used)} / ${formatBytes(data.ram_total)})`;
-    document.getElementById("ram").textContent = ramText;
+    
+    if (cpuText !== lastMetrics.cpuText) {
+      document.getElementById("cpu").textContent = cpuText;
+      lastMetrics.cpuText = cpuText;
+    }
+    if (ramText !== lastMetrics.ramText) {
+      document.getElementById("ram").textContent = ramText;
+      lastMetrics.ramText = ramText;
+    }
   } catch (e) {
-    document.getElementById("cpu").textContent = "—";
-    document.getElementById("ram").textContent = "—";
+    // Silent fail for metrics
   }
 }
 
+let lastModelsData = {};
 async function refreshModels() {
   const tbody = document.getElementById("modelsTable");
-  tbody.innerHTML = "<tr><td colspan='5'>Loading...</td></tr>";
+  if (!tbody) return;
+  
   try {
     const models = await fetchJson("/api/models");
     if (!models.length) {
       tbody.innerHTML = "<tr><td colspan='5'>No models</td></tr>";
       return;
     }
-    tbody.innerHTML = models.map(m => `
-      <tr>
-        <td>${m.ticker}</td>
-        <td>${m.version}</td>
-        <td>${formatTime(m.trained_at)}</td>
-        <td>${formatBytes(m.file_size)}</td>
-        <td>
-          <button class="secondary" onclick="trainTicker('${m.ticker}')">Train</button>
-          <button class="secondary" onclick="rollbackTicker('${m.ticker}')">Rollback</button>
-        </td>
-      </tr>
-    `).join("");
+    
+    // Only update changed rows
+    models.forEach(m => {
+      const lastM = lastModelsData[m.ticker];
+      if (!lastM || lastM.trained_at !== m.trained_at || lastM.version !== m.version) {
+        let row = tbody.querySelector(`tr[data-ticker="${m.ticker}"]`);
+        if (!row) {
+          row = document.createElement('tr');
+          row.setAttribute('data-ticker', m.ticker);
+          tbody.appendChild(row);
+        }
+        row.innerHTML = `
+          <td>${m.ticker}</td>
+          <td>${m.version}</td>
+          <td>${formatTime(m.trained_at)}</td>
+          <td>${formatBytes(m.file_size)}</td>
+          <td>
+            <button class="secondary" onclick="trainTicker('${m.ticker}')">Train</button>
+            <button class="secondary" onclick="rollbackTicker('${m.ticker}')">Rollback</button>
+          </td>
+        `;
+        lastModelsData[m.ticker] = m;
+      }
+    });
   } catch (e) {
-    tbody.innerHTML = "<tr><td colspan='5'>Error loading models</td></tr>";
+    console.error('Error loading models:', e);
   }
 }
 
+let lastTrainingData = {};
 async function refreshTraining() {
   const tbody = document.getElementById("trainingTable");
-  tbody.innerHTML = "<tr><td colspan='5'>Loading...</td></tr>";
+  if (!tbody) return;
+  
   try {
     const data = await fetchJson("/api/training-status");
     const rows = Object.values(data);
     if (!rows.length) {
-      tbody.innerHTML = "<tr><td colspan='5'>No training status</td></tr>";
+      tbody.innerHTML = "<tr><td colspan='6'>No training status</td></tr>";
       return;
     }
-    tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td>${r.ticker}</td>
-        <td>${r.status}</td>
-        <td>
-          <div class="progress">
-            <div class="bar" style="width:${r.progress || 0}%"></div>
-          </div>
-          <div class="progress-text">${r.progress || 0}%</div>
-        </td>
-        <td>${formatTime(r.last_trained)}</td>
-        <td>${formatTime(r.next_training)}</td>
-        <td><button class="secondary" onclick="trainTicker('${r.ticker}')">Train</button></td>
-      </tr>
-    `).join("");
+    
+    // Only update rows that changed
+    rows.forEach(r => {
+      const lastR = lastTrainingData[r.ticker];
+      if (!lastR || 
+          lastR.status !== r.status || 
+          lastR.progress !== r.progress ||
+          lastR.last_trained !== r.last_trained) {
+        
+        let row = tbody.querySelector(`tr[data-ticker="${r.ticker}"]`);
+        if (!row) {
+          // Create new row
+          row = document.createElement('tr');
+          row.setAttribute('data-ticker', r.ticker);
+          tbody.appendChild(row);
+        }
+        
+        // Calculate progress: if status is 'completed', show 100%
+        const displayProgress = r.status === 'completed' ? 100 : (r.progress || 0);
+        const statusClass = r.status === 'completed' ? 'complete' : (r.status === 'training' ? 'training' : 'idle');
+        
+        row.innerHTML = `
+          <td>${r.ticker}</td>
+          <td><span class="status-badge ${statusClass}">${r.status}</span></td>
+          <td>
+            <div class="progress">
+              <div class="bar" style="width:${displayProgress}%"></div>
+            </div>
+            <div class="progress-text">${displayProgress}%</div>
+          </td>
+          <td>${formatTime(r.last_trained)}</td>
+          <td>${formatTime(r.next_training)}</td>
+          <td><button class="secondary" onclick="trainTicker('${r.ticker}')">Train</button></td>
+        `;
+        lastTrainingData[r.ticker] = r;
+      }
+    });
   } catch (e) {
-    tbody.innerHTML = "<tr><td colspan='5'>Error loading status</td></tr>";
+    console.error('Error loading training status:', e);
   }
 }
 
+let lastQueueData = {};
 async function refreshQueue() {
   const queueEl = document.getElementById("queueList");
   const etaEl = document.getElementById("queueEta");
+  if (!queueEl || !etaEl) return;
+  
   try {
     const data = await fetchJson("/api/queue");
-    if (!data.queue.length) {
-      queueEl.textContent = "Queue is empty";
-      etaEl.textContent = "ETA: —";
-      return;
+    const queueText = data.queue.length ? data.queue.join(", ") : "Queue is empty";
+    const etaText = data.eta_seconds ? `ETA: ~${Math.ceil(data.eta_seconds / 60)} min` : "ETA: —";
+    
+    if (queueText !== lastQueueData.text) {
+      queueEl.textContent = queueText;
+      lastQueueData.text = queueText;
     }
-    queueEl.textContent = data.queue.join(", ");
-    if (data.eta_seconds) {
-      const mins = Math.ceil(data.eta_seconds / 60);
-      etaEl.textContent = `ETA: ~${mins} min`;
-    } else {
-      etaEl.textContent = "ETA: —";
+    if (etaText !== lastQueueData.eta) {
+      etaEl.textContent = etaText;
+      lastQueueData.eta = etaText;
     }
   } catch (e) {
-    queueEl.textContent = "Error loading queue";
-    etaEl.textContent = "ETA: —";
+    // Silent fail for queue
   }
 }
 
+let lastLogUpdate = 0;
 async function refreshLogs() {
   const logBox = document.getElementById("logBox");
+  if (!logBox) return;
+  
+  // Only refresh logs every 60 seconds (less frequent)
+  const now = Date.now();
+  if (now - lastLogUpdate < 60000) return;
+  lastLogUpdate = now;
+  
   try {
     const data = await fetchJson("/api/logs");
     const lines = data.logs.map(l => `[${l.time}] ${l.message}`).join("\n");
     logBox.textContent = lines || "No logs";
   } catch (e) {
-    logBox.textContent = "Error loading logs";
+    // Silent fail for logs
   }
 }
 
+let lastPerfUpdate = 0;
 async function refreshPerformance() {
   const grid = document.getElementById("performanceGrid");
+  if (!grid) return;
+  
+  // Only refresh performance every 60 seconds (much less frequent)
+  const now = Date.now();
+  if (now - lastPerfUpdate < 60000) return;
+  lastPerfUpdate = now;
+  
   try {
     const data = await fetchJson("/api/performance");
     const perf = data.performance || {};
@@ -154,12 +217,20 @@ async function refreshPerformance() {
       </div>
     `).join("");
   } catch (e) {
-    grid.innerHTML = "Error loading performance";
+    // Silent fail for performance
   }
 }
 
+let lastHistoryUpdate = 0;
 async function refreshHistory() {
   const list = document.getElementById("historyList");
+  if (!list) return;
+  
+  // Only refresh history every 60 seconds (much less frequent)
+  const now = Date.now();
+  if (now - lastHistoryUpdate < 60000) return;
+  lastHistoryUpdate = now;
+  
   try {
     const data = await fetchJson("/api/training-history");
     const items = data.history || [];
@@ -176,7 +247,7 @@ async function refreshHistory() {
       </div>
     `).join("");
   } catch (e) {
-    list.textContent = "Error loading history";
+    // Silent fail for history
   }
 }
 
@@ -243,16 +314,36 @@ async function trainSector() {
 }
 
 async function refreshAll() {
-  await refreshHealth();
-  await refreshMetrics();
-  await refreshModels();
-  await refreshTraining();
-  await refreshQueue();
-  await refreshLogs();
-  await refreshPerformance();
-  await refreshHistory();
+  // Update every 3 seconds: health, training status, queue
+  await Promise.all([
+    refreshHealth(),
+    refreshTraining(),
+    refreshQueue()
+  ]);
+}
+
+async function refreshInfrequent() {
+  // Update every 10 seconds: metrics, models
+  await Promise.all([
+    refreshMetrics(),
+    refreshModels()
+  ]);
+}
+
+async function refreshRareLogs() {
+  // Update every 30-60 seconds: logs, performance, history
+  await Promise.all([
+    refreshLogs(),
+    refreshPerformance(),
+    refreshHistory()
+  ]);
 }
 
 loadSectors();
 refreshAll();
-setInterval(refreshAll, 15000);
+refreshInfrequent();
+refreshRareLogs();
+
+setInterval(refreshAll, 3000);        // Every 3 seconds (critical updates)
+setInterval(refreshInfrequent, 10000); // Every 10 seconds
+setInterval(refreshRareLogs, 60000);   // Every 60 seconds
