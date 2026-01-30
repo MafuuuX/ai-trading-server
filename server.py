@@ -6,17 +6,18 @@ import asyncio
 import os
 import json
 import hashlib
-import base64
-import secrets
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 import logging
+import base64
+import secrets
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.security.utils import get_authorization_scheme_param
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 import pandas as pd
@@ -36,38 +37,30 @@ BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
-# Basic Auth settings (set in environment)
-AUTH_USER = os.getenv("AI_TRADING_USER", "MafuuuX")
-AUTH_PASS = os.getenv("AI_TRADING_PASS", "Keanu!_203")
+# Basic auth for web UI
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "changeme")
 
 
-def _unauthorized() -> Response:
-    return Response(
-        content="Unauthorized",
-        status_code=401,
-        headers={"WWW-Authenticate": "Basic realm=AI-Trading"},
-    )
-
-
-def _check_basic_auth(request: Request) -> bool:
-    auth = request.headers.get("Authorization")
-    if not auth or not auth.startswith("Basic "):
+def _is_authorized(auth_header: str) -> bool:
+    scheme, param = get_authorization_scheme_param(auth_header)
+    if scheme.lower() != "basic" or not param:
         return False
     try:
-        encoded = auth.split(" ", 1)[1]
-        decoded = base64.b64decode(encoded).decode("utf-8")
+        decoded = base64.b64decode(param).decode("utf-8")
         username, password = decoded.split(":", 1)
-        return secrets.compare_digest(username, AUTH_USER) and secrets.compare_digest(password, AUTH_PASS)
     except Exception:
         return False
+    return secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASS)
 
 
 @app.middleware("http")
-async def basic_auth_middleware(request: Request, call_next):
-    protected_prefixes = ("/ui", "/api", "/docs", "/redoc", "/openapi.json", "/static")
-    if request.url.path.startswith(protected_prefixes):
-        if not _check_basic_auth(request):
-            return _unauthorized()
+async def ui_basic_auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/ui") or path.startswith("/static"):
+        auth_header = request.headers.get("Authorization", "")
+        if not _is_authorized(auth_header):
+            return Response(status_code=401, headers={"WWW-Authenticate": "Basic"})
     return await call_next(request)
 
 # Global state
