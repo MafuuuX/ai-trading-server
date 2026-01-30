@@ -292,6 +292,10 @@ class CachedDataFetcher:
                 self.logger.error(self.last_error)
                 return None
             
+            # Detailed logging before cache
+            self.logger.info(f"✓ {ticker}: {len(df)} rows, Date range {df['Date'].min()} to {df['Date'].max()}")
+            self.logger.info(f"  Close: min={df['Close'].min():.2f}, max={df['Close'].max():.2f}, NaN={df['Close'].isna().sum()}")
+            
             # Cache the data
             with open(cache_file, 'wb') as f:
                 pickle.dump(df, f)

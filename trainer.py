@@ -58,8 +58,8 @@ class ModelTrainer:
         df['Returns'] = df['Close'].pct_change()
         df['Volatility'] = df['Returns'].rolling(window=20).std()
         
-        # Fill NaN values
-        df = df.fillna(method='bfill').fillna(0)
+        # Fill NaN values (using new pandas syntax, not deprecated method parameter)
+        df = df.bfill().fillna(0)
         
         return df
     
@@ -84,7 +84,37 @@ class ModelTrainer:
         feature_cols = ['Close', 'RSI', 'MACD', 'BB_High', 'BB_Low', 'ATR', 
                        'SMA_20', 'SMA_50', 'Returns', 'Volatility', 'High', 'Low']
         
+        # Ensure all feature columns exist and have no NaN
+        missing_cols = [col for col in feature_cols if col not in df.columns]
+        if missing_cols:
+            print(f"⚠️ Missing feature columns: {missing_cols}")
+            return None
+        
+        # Fill remaining NaN values in feature columns before scaling
+        for col in feature_cols:
+            if df[col].isna().any():
+                print(f"  Filling NaN in {col}")
+                df[col] = df[col].ffill().bfill()
+                # If still NaN (e.g., at start), use 0
+                df[col] = df[col].fillna(0)
+        
+        # Final check: drop rows with any NaN in features
+        df = df.dropna(subset=feature_cols)
+        
+        if len(df) < self.lookback + 1:
+            print(f"⚠️ Insufficient data after feature validation: {len(df)} rows")
+            return None
+        
+        # Reset index again after dropping rows
+        df = df.reset_index(drop=True)
+        
         X = df[feature_cols].values
+        
+        # Verify X has no NaN before scaling
+        if np.any(np.isnan(X)):
+            nan_count = np.isnan(X).sum()
+            print(f"⚠️ ERROR: X still contains {nan_count} NaN values after preprocessing!")
+            return None
         
         # Scale features
         self.scaler = MinMaxScaler()
