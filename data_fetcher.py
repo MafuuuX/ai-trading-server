@@ -112,15 +112,30 @@ class CachedDataFetcher:
                 self.last_error = f"Stooq empty dataset for {ticker}"
                 self.logger.error(self.last_error)
                 return None
-            # Normalize columns
-            df.rename(columns={
-                "Date": "Date",
-                "Open": "Open",
-                "High": "High",
-                "Low": "Low",
-                "Close": "Close",
-                "Volume": "Volume"
-            }, inplace=True)
+            # Normalize columns to expected schema
+            col_map = {c.lower(): c for c in df.columns}
+            # Stooq uses: Date, Open, High, Low, Close, Volume
+            rename = {}
+            for key in ("date", "open", "high", "low", "close", "volume"):
+                if key in col_map:
+                    rename[col_map[key]] = key.capitalize()
+            if rename:
+                df.rename(columns=rename, inplace=True)
+
+            # Ensure required columns exist
+            required = ["Date", "Open", "High", "Low", "Close", "Volume"]
+            for col in required:
+                if col not in df.columns:
+                    self.last_error = f"Stooq missing column {col} for {ticker}"
+                    self.logger.error(self.last_error)
+                    return None
+
+            # Clean data
+            df = df.dropna(subset=["Open", "High", "Low", "Close"])
+            df = df.sort_values("Date")
+            # Provide Adj Close for compatibility
+            if "Adj Close" not in df.columns:
+                df["Adj Close"] = df["Close"]
             return df
         except Exception as e:
             self.last_error = f"Stooq fetch error for {ticker}: {e}"
