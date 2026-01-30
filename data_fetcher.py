@@ -11,6 +11,7 @@ import pickle
 from pathlib import Path
 import time
 import logging
+import io
 
 # Top 135 stocks across all market caps
 TOP_STOCKS = [
@@ -91,6 +92,40 @@ class CachedDataFetcher:
             self.last_error = f"Yahoo ping error: {e}"
             self.logger.error(self.last_error)
             return "down"
+
+    def _stooq_symbol(self, ticker: str) -> str:
+        """Map ticker to Stooq symbol"""
+        return f"{ticker.lower()}.us"
+
+    def _fetch_from_stooq(self, ticker: str) -> pd.DataFrame:
+        """Fetch historical data from Stooq (daily)"""
+        symbol = self._stooq_symbol(ticker)
+        url = f"https://stooq.pl/q/d/l/?s={symbol}&i=d"
+        try:
+            resp = self.session.get(url, timeout=10)
+            if resp.status_code != 200:
+                self.last_error = f"Stooq HTTP {resp.status_code} for {ticker}"
+                self.logger.error(self.last_error)
+                return None
+            df = pd.read_csv(io.StringIO(resp.text))
+            if df is None or df.empty:
+                self.last_error = f"Stooq empty dataset for {ticker}"
+                self.logger.error(self.last_error)
+                return None
+            # Normalize columns
+            df.rename(columns={
+                "Date": "Date",
+                "Open": "Open",
+                "High": "High",
+                "Low": "Low",
+                "Close": "Close",
+                "Volume": "Volume"
+            }, inplace=True)
+            return df
+        except Exception as e:
+            self.last_error = f"Stooq fetch error for {ticker}: {e}"
+            self.logger.error(self.last_error)
+            return None
         
     def _get_cache_file(self, ticker: str) -> Path:
         """Get cache file path for ticker"""
@@ -127,11 +162,21 @@ class CachedDataFetcher:
 
         ping_status = self._yahoo_ping()
         if ping_status == "down":
-            self.last_error = f"Yahoo endpoint not reachable for {ticker}"
-            self.logger.error(self.last_error)
+            self.logger.warning(f"Yahoo down - using Stooq for {ticker}")
+            df = self._fetch_from_stooq(ticker)
+            if df is not None and not df.empty:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(df, f)
+                return df
             return None
         if ping_status == "rate_limited":
-            self.logger.warning(f"Rate limited - backing off before fetching {ticker}")
+            self.logger.warning(f"Yahoo rate limited - using Stooq for {ticker}")
+            df = self._fetch_from_stooq(ticker)
+            if df is not None and not df.empty:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(df, f)
+                return df
+            self.logger.warning(f"Stooq failed for {ticker}, backing off Yahoo")
             time.sleep(self.retry_delay)
         
         try:
@@ -170,6 +215,10 @@ class CachedDataFetcher:
                 self.logger.warning(f"Retry {attempt}/{self.max_retries} for {ticker}")
                 time.sleep(self.retry_delay * attempt)
 
+            if df is None or df.empty:
+                # Final fallback to Stooq
+                self.logger.warning(f"Yahoo failed - fallback to Stooq for {ticker}")
+                df = self._fetch_from_stooq(ticker)
             if df is None or df.empty:
                 self.last_error = f"Error fetching {ticker}: empty dataset"
                 self.logger.error(self.last_error)
