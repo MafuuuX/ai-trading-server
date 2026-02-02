@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 import pandas as pd
 
-from data_fetcher import CachedDataFetcher, TOP_STOCKS
+from data_fetcher import CachedDataFetcher, TOP_STOCKS, get_live_prices
 from trainer import ModelTrainer
 
 # Sector mapping for Train Sector
@@ -728,6 +728,41 @@ def schedule_daily_training():
         id='daily_training'
     )
     logger.info("Daily training scheduled at 23:30 UTC")
+
+def schedule_live_price_collection():
+    """Schedule periodic live price collection for chart cache"""
+    # Collect live prices every 3 seconds
+    state.scheduler.add_job(
+        collect_live_prices,
+        'interval',
+        seconds=3,
+        id='live_price_collection'
+    )
+    logger.info("Live price collection scheduled (every 3s)")
+
+def collect_live_prices():
+    """Collect live prices for all tickers and cache them"""
+    try:
+        prices = get_live_prices(TOP_STOCKS)
+        
+        added = 0
+        for ticker, price in prices.items():
+            if price is not None and price > 0:
+                try:
+                    state.add_live_price(ticker.upper(), float(price))
+                    added += 1
+                except (ValueError, TypeError):
+                    continue
+        
+        # Save cache periodically (every 20 collections = 1 minute)
+        run_count = getattr(state, '_price_collection_count', 0) + 1
+        state._price_collection_count = run_count
+        
+        if run_count % 20 == 0:
+            state.save_chart_cache()
+            logger.info(f"Chart cache saved: {added}/{len(TOP_STOCKS)} prices collected")
+    except Exception as e:
+        logger.error(f"Error collecting live prices: {e}")
 
 def train_end_of_day():
     """Train all models at end of day"""
