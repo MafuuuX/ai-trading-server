@@ -1,16 +1,16 @@
 # Contributing Guide
 
-Danke für dein Interesse an diesem Projekt! Hier sind einige Richtlinien für Contributions.
+Thank you for your interest in this project! Here are some guidelines for contributions.
 
-## Entwicklungs-Setup
+## Development Setup
 
 ```bash
-# Clone und Virtual Environment
+# Clone and Virtual Environment
 git clone https://github.com/MafuuuX/ai-trading-server.git
 cd ai-trading-server
 python3 -m venv venv
 source venv/bin/activate  # Linux/macOS
-# oder
+# or
 venv\Scripts\activate     # Windows
 
 # Dependencies
@@ -91,19 +91,19 @@ perf(cache): implement parallel price fetching with ThreadPoolExecutor
 
 ## Pull Request Process
 
-1. Fork das Repository
-2. Erstelle einen Feature Branch (`git checkout -b feature/amazing-feature`)
-3. Commit deine Änderungen (`git commit -m '[Feature] Add amazing feature'`)
-4. Push zum Branch (`git push origin feature/amazing-feature`)
-5. Öffne einen Pull Request
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes using conventional commits format
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
 ## Reporting Issues
 
-Bitte berichte Bugs mit:
-- Klarer Beschreibung des Problems
+Please report bugs with:
+- Clear description of the problem
 - Steps to reproduce
 - Expected vs. actual behavior
-- Python version und OS
+- Python version and OS
 - Relevant logs/tracebacks
 
 ## Areas for Contribution
