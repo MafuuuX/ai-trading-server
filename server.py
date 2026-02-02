@@ -719,16 +719,21 @@ def schedule_daily_training():
     )
     logger.info("Daily training scheduled at 23:30 UTC")
 
-async def train_end_of_day():
+def train_end_of_day():
     """Train all models at end of day"""
     logger.info(f"Starting end-of-day training for {len(TOP_STOCKS)} stocks...")
     
-    for ticker in TOP_STOCKS[:20]:  # Start with first 20 for testing
+    for ticker in TOP_STOCKS:  # Train all stocks
         if state.training_status.get(ticker) not in ("training", "queued"):
             state.training_status[ticker] = "queued"
             if ticker not in state.training_queue:
                 state.training_queue.append(ticker)
-    process_training_queue()
+    
+    # Process queue in separate thread to avoid blocking scheduler
+    import threading
+    training_thread = threading.Thread(target=process_training_queue, daemon=False)
+    training_thread.start()
+    logger.info(f"Training queue populated with {len(state.training_queue)} stocks")
 
 # ============================================================================
 # STARTUP & SHUTDOWN
