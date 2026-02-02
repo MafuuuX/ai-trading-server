@@ -111,6 +111,11 @@ class ServerState:
         self.last_training = {}
         self.logs = []
         
+        # Model version tracking
+        self.model_versions_file = Path("./data/model_versions.json")
+        self.model_versions_file.parent.mkdir(parents=True, exist_ok=True)
+        self._load_model_versions()
+
         # Live price cache for chart data
         self.live_prices_cache = {}  # ticker -> list of {price, timestamp}
         self.live_prices_max_points = 500  # Keep up to 500 price points per ticker
@@ -124,6 +129,39 @@ class ServerState:
         
         # Track startup time for uptime calculation
         self.startup_time = datetime.now()
+
+    def _load_model_versions(self):
+        """Load model versions from disk and backfill from existing models"""
+        try:
+            if self.model_versions_file.exists():
+                with open(self.model_versions_file, 'r') as f:
+                    data = json.load(f)
+                    self.active_models = data.get('versions', {})
+        except Exception as e:
+            logger.warning(f"Could not load model versions: {e}")
+            self.active_models = {}
+
+        # Backfill for existing model files
+        try:
+            for model_file in self.models_dir.glob("*_model.h5"):
+                ticker = model_file.stem.replace("_model", "")
+                if ticker not in self.active_models:
+                    self.active_models[ticker] = "v1"
+        except Exception as e:
+            logger.warning(f"Could not backfill model versions: {e}")
+
+        self.save_model_versions()
+
+    def save_model_versions(self):
+        """Save model versions to disk"""
+        try:
+            with open(self.model_versions_file, 'w') as f:
+                json.dump({
+                    'versions': self.active_models,
+                    'last_updated': datetime.now().isoformat()
+                }, f)
+        except Exception as e:
+            logger.warning(f"Could not save model versions: {e}")
     
     def _load_chart_cache(self):
         """Load cached chart data from disk"""
@@ -383,6 +421,9 @@ async def rollback_model(ticker: str):
     backups[0].replace(model_path)
     scaler_backups[0].replace(scaler_path)
     
+    if ticker not in state.active_models:
+        state.active_models[ticker] = "v1"
+        state.save_model_versions()
     logger.info(f"Rolled back {ticker} to latest backup")
     return {"status": "rolled_back", "ticker": ticker}
 
@@ -537,7 +578,15 @@ def train_stock_task(ticker: str):
             state.training_status[ticker] = "completed"
             state.training_progress[ticker] = 100.0  # Set to 100% when completed
             state.last_training[ticker] = datetime.now().isoformat()
-            state.active_models[ticker] = "v1"
+            # Increment model version
+            current_version = state.active_models.get(ticker, "v0")
+            try:
+                current_num = int(str(current_version).lstrip("v"))
+            except ValueError:
+                current_num = 0
+            new_version = f"v{current_num + 1}"
+            state.active_models[ticker] = new_version
+            state.save_model_versions()
             state.training_metrics[ticker] = {
                 "class_accuracy": result.get("class_accuracy"),
                 "reg_mae": result.get("reg_mae"),
