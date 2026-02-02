@@ -737,14 +737,17 @@ def schedule_daily_training():
 
 def schedule_live_price_collection():
     """Schedule periodic live price collection for chart cache"""
-    # Collect live prices every 3 seconds
+    # Collect live prices every 5 seconds (Alpaca allows ~20 req/sec)
     state.scheduler.add_job(
         collect_live_prices,
         'interval',
-        seconds=3,
-        id='live_price_collection'
+        seconds=5,
+        id='live_price_collection',
+        max_instances=1,  # Only one instance at a time
+        coalesce=True,    # Combine missed runs
+        replace_existing=True
     )
-    logger.info("Live price collection scheduled (every 3s)")
+    logger.info("Live price collection scheduled (every 5s)")
 
 def collect_live_prices():
     """Collect live prices for all tickers and cache them"""
@@ -760,14 +763,16 @@ def collect_live_prices():
                 except (ValueError, TypeError):
                     continue
         
-        # Save cache periodically (every 20 collections = 1 minute)
+        # Save cache periodically (every 20 collections = ~1 minute)
         run_count = getattr(state, '_price_collection_count', 0) + 1
         state._price_collection_count = run_count
         
-        schedule_live_price_collection()
         if run_count % 20 == 0:
             state.save_chart_cache()
             logger.info(f"Chart cache saved: {added}/{len(TOP_STOCKS)} prices collected")
+        elif run_count == 1:
+            # Log first collection
+            logger.info(f"[Alpaca] First price collection: {added}/{len(TOP_STOCKS)} prices")
     except Exception as e:
         logger.error(f"Error collecting live prices: {e}")
 
@@ -800,6 +805,7 @@ async def startup_event():
     if not state.scheduler.running:
         state.scheduler.start()
         schedule_daily_training()
+        schedule_live_price_collection()  # Start automatic price collection
     
     logger.info("✅ Server initialized")
 
