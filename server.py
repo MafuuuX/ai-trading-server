@@ -247,6 +247,9 @@ class HealthResponse(BaseModel):
     training_queue: int
     uptime_seconds: float
 
+class PriceUpdate(BaseModel):
+    price: float
+
 # ============================================================================
 # HEALTH & INFO ENDPOINTS
 # ============================================================================
