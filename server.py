@@ -314,15 +314,25 @@ async def add_chart_price(ticker: str, price: float):
 @app.post("/api/chart-cache/batch")
 async def add_chart_prices_batch(prices: Dict[str, float]):
     """Add multiple live price points at once"""
-    for ticker, price in prices.items():
-        if price is not None and price > 0:
-            state.add_live_price(ticker.upper(), float(price))
-    
-    # Save cache periodically (every 10 updates or so)
-    if sum(len(v) for v in state.live_prices_cache.values()) % 10 == 0:
-        state.save_chart_cache()
-    
-    return {"status": "ok", "count": len(prices)}
+    try:
+        added = 0
+        for ticker, price in prices.items():
+            try:
+                if price is not None and price > 0:
+                    state.add_live_price(ticker.upper(), float(price))
+                    added += 1
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid price for {ticker}: {price} - {e}")
+                continue
+        
+        # Save cache periodically (every 10 updates or so)
+        if sum(len(v) for v in state.live_prices_cache.values()) % 10 == 0:
+            state.save_chart_cache()
+        
+        return {"status": "ok", "count": len(prices), "added": added}
+    except Exception as e:
+        logger.error(f"Error processing batch: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.delete("/api/chart-cache")
