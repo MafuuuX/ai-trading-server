@@ -1,7 +1,56 @@
 import yfinance as yf
 import pandas as pd
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+# Top stocks for training
+TOP_STOCKS = [
+    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'GOOG', 'NFLX', 'AMD',
+    'JPM', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'SCHW', 'COIN', 'V', 'MA', 'AXP',
+    'UNH', 'JNJ', 'LLY', 'MRK', 'PFE', 'ABBV', 'TMO', 'AMGN',
+    'CVX', 'XOM', 'COP', 'MPC', 'PSX', 'VLO', 'HES', 'SLB',
+    'MCD', 'SBUX', 'NKE', 'LULU', 'WMT', 'KO', 'PEP', 'HD',
+    'SPY', 'QQQ', 'IWM', 'EEM', 'XLK', 'XLV', 'XLF', 'XLE',
+    'AVGO', 'ORCL', 'INTC', 'CRM', 'ADBE', 'IBM', 'CSCO', 'QCOM', 'TXN'
+]
+
+
+class CachedDataFetcher:
+    """Cached data fetcher for server-side training"""
+    
+    def __init__(self, cache_days: int = 1):
+        self.cache = {}  # ticker -> (data, timestamp)
+        self.cache_days = cache_days
+        self.last_error = None
+    
+    def fetch_historical_data(self, ticker: str, period: str = "2y") -> pd.DataFrame:
+        """Fetch historical data with caching"""
+        try:
+            # Check cache
+            if ticker in self.cache:
+                data, timestamp = self.cache[ticker]
+                if datetime.now() - timestamp < timedelta(days=self.cache_days):
+                    return data
+            
+            # Fetch fresh data
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            
+            data = fetch_stock_data(ticker, start_date, end_date)
+            
+            if data is None or data.empty:
+                self.last_error = f"No data for {ticker}"
+                return None
+            
+            # Cache the result
+            self.cache[ticker] = (data, datetime.now())
+            return data
+            
+        except Exception as e:
+            self.last_error = str(e)
+            print(f"[CachedDataFetcher] Error fetching {ticker}: {e}")
+            return None
+
 
 def is_market_open():
     """Check if US stock market is currently open (NYSE/NASDAQ hours).
