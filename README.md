@@ -26,7 +26,12 @@ Enterprise-grade distributed model training server for 135+ stocks with advanced
 
 ✅ **Dual-Head LSTM Model** - Simultaneous classification and regression predictions  
 ✅ **7 Technical Indicators** - All implemented with pure pandas (no external dependencies)  
-✅ **Intelligent Data Fallback** - YFinance → Stooq (Polish markets) seamless switching  
+✅ **Multi-Provider Price Fetching** - Alpaca (primary) → Finnhub → Yahoo (fallback)  
+✅ **Parallel Price Collection** - ThreadPoolExecutor with up to 20 workers for speed  
+✅ **Live Pricing** - Real-time market data with intelligent rate limiting  
+✅ **WebSocket Support** - Real-time server updates to connected clients  
+✅ **Google Drive Backup** - Automatic daily model backups (keeps last 7)  
+✅ **Intelligent Data Fallback** - Alpaca → YFinance seamless switching  
 ✅ **Smart Caching** - 2-hour TTL with automatic validation  
 ✅ **Zero-Downtime Training** - Background jobs don't block API  
 ✅ **FastAPI REST Server** - Modern async Python web framework  
@@ -40,9 +45,13 @@ Enterprise-grade distributed model training server for 135+ stocks with advanced
 ### Core Components
 
 **Data Fetcher** (`data_fetcher.py`)
-- Multi-source data strategy: YFinance (primary) → Stooq (fallback)
-- Intelligent timeout handling (3-5 seconds)
-- Polish column mapping: `Data→Date`, `Otwarcie→Open`, `Zamkniecie→Close`, etc.
+- **Multi-Provider Strategy**: 
+  - Primary: Alpaca API (unlimited, fast, real-time)
+  - Backup: Finnhub (60 requests/minute, reliable)
+  - Fallback: Yahoo Finance (unlimited, slowest)
+- **Parallel Price Fetching**: ThreadPoolExecutor with up to 20 workers
+- **Rate Limiting**: Provider-specific configs (Alpaca: none, Finnhub: 1s, Yahoo: 0.5s)
+- **Retry Logic**: Exponential backoff for failed requests
 - Pandas-based dataframe validation
 
 **Model Trainer** (`trainer.py`)
@@ -54,13 +63,23 @@ Enterprise-grade distributed model training server for 135+ stocks with advanced
 
 **FastAPI Server** (`server.py`)
 - Async request handling
+- **WebSocket Support** (`/ws` endpoint) - Real-time training updates
 - JWT-based authentication
 - Model download/sync endpoints
-- Training progress tracking
+- Training progress tracking with live streaming
 - HTML dashboard
+- Connection management for WebSocket clients
+
+**Google Drive Backup** (`backup_gdrive.py`)
+- Automated daily backups at 4:00 AM (via cron)
+- Uploads to "AI_Trading_Backups" folder in Google Drive
+- Keeps last 7 backups, auto-deletes older ones
+- Supports manual backup: `python backup_gdrive.py`
+- List backups: `python backup_gdrive.py --list`
 
 **Scheduler**
 - Automatic daily retraining (23:30 UTC)
+- Live price collection every 5 seconds
 - Cron-based execution
 - Error recovery with exponential backoff
 
@@ -162,6 +181,23 @@ export ADMIN_PASS="your_secure_password"
 export SESSION_SECRET="your_session_secret_key"
 export TRAINING_HOUR=23  # UTC hour for daily retraining
 export TRAINING_MINUTE=30
+
+# API Keys (optional - for multi-provider fallback)
+export ALPACA_API_KEY_ID="your_alpaca_key"
+export ALPACA_SECRET_KEY="your_alpaca_secret"
+export ALPACA_BASE_URL="https://data.alpaca.markets"
+export FINNHUB_API_KEY="your_finnhub_key"
+```
+
+Or use `api_keys.py` in parent directory (parent of ai-trading-server):
+```python
+def load_api_keys():
+    return {
+        'alpaca': 'your_key',
+        'alpaca_secret': 'your_secret',
+        'alpaca_base_url': 'https://data.alpaca.markets',
+        'finnhub': 'your_key'
+    }
 ```
 
 ### server.py Settings
@@ -257,6 +293,7 @@ Response: {
 - `GET /api/health` - Server status
 - `GET /api/models` - List available models
 - `GET /api/training-status` - Training progress for all stocks
+- `GET /api/chart-cache` - Get cached live prices
 
 ### Model Management
 - `GET /api/models/{ticker}/download` - Download model + scaler as ZIP
@@ -265,6 +302,17 @@ Response: {
 ### Training
 - `POST /api/train/{ticker}` - Train specific stock
 - `POST /api/train-batch` - Train multiple stocks
+
+### Live Prices
+- `GET /api/prices/{ticker}` - Get single stock live price
+- `GET /api/prices?tickers=AAPL,MSFT,GOOGL` - Get multiple prices
+
+### WebSocket
+- `WS /ws` - Real-time connection for:
+  - Training progress updates
+  - Server status messages
+  - Price updates (if configured)
+  - Custom events from server
 
 ## Stock Coverage
 
@@ -331,16 +379,42 @@ List available models:
 curl http://192.168.2.96:8000/api/models
 ```
 
+Get live prices:
+```bash
+curl "http://192.168.2.96:8000/api/prices?tickers=AAPL,MSFT,GOOGL"
+```
+
+View backups in Google Drive:
+```bash
+cd /path/to/ai-trading-server
+python backup_gdrive.py --list
+```
+
 ## Troubleshooting
 
-**"Too Many Requests"**: yfinance rate limiting
-- Solution: Data fetcher has built-in 2-hour cache and 0.5s rate limiting
+**"Too Many Requests"**: Rate limiting on data providers
+- Solution: Data fetcher has multi-provider fallback and intelligent rate limiting
+- Alpaca: No limits (unlimited)
+- Finnhub: 1 second between requests (60/min limit)
+- Yahoo: 0.5 second between requests (fallback)
+
+**"WebSocket connection refused"**: WebSocket endpoint not accessible
+- Solution: Ensure uvicorn is running and `websockets` library is installed: `pip install websockets>=16.0`
+
+**"No price data available"**: All providers failing
+- Solution: Check API keys in environment variables or `api_keys.py`
+- Verify internet connection and provider status
+- Check logs: `journalctl -u ai-trading-server -f`
 
 **OOM (Out of Memory)**: Training 135 stocks simultaneously
 - Solution: Reduce batch size in trainer.py or train in smaller batches
 
 **Training takes too long**: i5-6400 is baseline hardware
 - Solution: Upgrade CPU or train fewer stocks (~40-50 optimal for this CPU)
+
+**"Google Drive backup failed"**: OAuth token expired
+- Solution: Re-run setup: `python backup_gdrive.py --setup`
+- Or manually clear `token.json` and reauthorize
 
 ## License
 
