@@ -4,8 +4,6 @@ Trains dual-head LSTM models for 135 stocks with continuous learning
 """
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, Input, Model
@@ -13,6 +11,25 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau, Callbac
 import joblib
 from pathlib import Path
 from datetime import datetime
+
+# Lazy import scikit-learn to avoid conflicts with PySide6
+_sklearn_imported = False
+MinMaxScaler = None
+train_test_split = None
+
+def _ensure_sklearn():
+    """Lazy import of scikit-learn functions"""
+    global _sklearn_imported, MinMaxScaler, train_test_split
+    if not _sklearn_imported:
+        try:
+            from sklearn.preprocessing import MinMaxScaler as MMS
+            from sklearn.model_selection import train_test_split as tts
+            MinMaxScaler = MMS
+            train_test_split = tts
+            _sklearn_imported = True
+        except ImportError:
+            # Fallback: use numpy-based scaling
+            pass
 
 class ModelTrainer:
     """Trains and manages dual-head LSTM models"""
@@ -79,6 +96,9 @@ class ModelTrainer:
     
     def _build_dataset(self, df: pd.DataFrame, test_size: float = 0.2):
         """Build training/validation datasets"""
+        # Ensure sklearn is loaded
+        _ensure_sklearn()
+        
         df = self._add_features(df)
         
         # Ensure Close column has no NaN/None values
@@ -250,7 +270,7 @@ class ModelTrainer:
 
         # Callbacks
         callbacks = [
-            EarlyStopping(monitor='val_classifier_loss', patience=10, restore_best_weights=True),
+            EarlyStopping(monitor='val_classifier_loss', patience=10, restore_best_weights=True, mode='min'),
             ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7)
         ]
         if progress_cb:

@@ -16,6 +16,16 @@ function formatTime(iso) {
   try { return new Date(iso).toLocaleString(); } catch { return iso; }
 }
 
+function formatUptime(seconds) {
+  if (!seconds && seconds !== 0) return "—";
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(days)}:${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+}
+
 async function refreshHealth() {
   try {
     const data = await fetchJson("/api/health");
@@ -23,7 +33,7 @@ async function refreshHealth() {
     badge.textContent = "Healthy";
     badge.classList.remove("err");
     badge.classList.add("ok");
-    document.getElementById("uptime").textContent = `${Math.floor(data.uptime_seconds)}s`;
+    document.getElementById("uptime").textContent = formatUptime(data.uptime_seconds);
     document.getElementById("activeModels").textContent = data.active_models;
     document.getElementById("trainingQueue").textContent = data.training_queue;
   } catch (e) {

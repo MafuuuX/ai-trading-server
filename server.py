@@ -111,12 +111,56 @@ class ServerState:
         self.last_training = {}
         self.logs = []
         
+        # Live price cache for chart data
+        self.live_prices_cache = {}  # ticker -> list of {price, timestamp}
+        self.live_prices_max_points = 500  # Keep up to 500 price points per ticker
+        self.chart_cache_file = Path("./data/chart_cache.json")
+        self.chart_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        self._load_chart_cache()
+        
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
         self.trainer = ModelTrainer()
         
         # Track startup time for uptime calculation
         self.startup_time = datetime.now()
+    
+    def _load_chart_cache(self):
+        """Load cached chart data from disk"""
+        try:
+            if self.chart_cache_file.exists():
+                with open(self.chart_cache_file, 'r') as f:
+                    data = json.load(f)
+                    self.live_prices_cache = data.get('live_prices', {})
+                    logger.info(f"Loaded chart cache with {len(self.live_prices_cache)} tickers")
+        except Exception as e:
+            logger.warning(f"Could not load chart cache: {e}")
+            self.live_prices_cache = {}
+    
+    def save_chart_cache(self):
+        """Save chart data cache to disk"""
+        try:
+            with open(self.chart_cache_file, 'w') as f:
+                json.dump({
+                    'live_prices': self.live_prices_cache,
+                    'last_updated': datetime.now().isoformat()
+                }, f)
+        except Exception as e:
+            logger.warning(f"Could not save chart cache: {e}")
+    
+    def add_live_price(self, ticker: str, price: float):
+        """Add a live price point to the cache"""
+        if ticker not in self.live_prices_cache:
+            self.live_prices_cache[ticker] = []
+        
+        self.live_prices_cache[ticker].append({
+            'price': price,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # Limit cache size
+        if len(self.live_prices_cache[ticker]) > self.live_prices_max_points:
+            self.live_prices_cache[ticker] = self.live_prices_cache[ticker][-self.live_prices_max_points:]
 
 state = ServerState()
 
@@ -192,6 +236,63 @@ async def get_metrics():
         "ram_used": mem.used,
         "ram_total": mem.total
     }
+
+
+# ============================================================================
+# CHART DATA CACHE ENDPOINTS
+# ============================================================================
+
+@app.get("/api/chart-cache")
+async def get_chart_cache():
+    """Get cached live price data for all tickers - used by app on startup"""
+    return {
+        "prices": state.live_prices_cache,
+        "last_updated": datetime.now().isoformat(),
+        "max_points": state.live_prices_max_points
+    }
+
+
+@app.get("/api/chart-cache/{ticker}")
+async def get_chart_cache_ticker(ticker: str):
+    """Get cached live price data for a specific ticker"""
+    ticker = ticker.upper()
+    if ticker not in state.live_prices_cache:
+        return {"prices": [], "ticker": ticker}
+    return {
+        "prices": state.live_prices_cache[ticker],
+        "ticker": ticker,
+        "count": len(state.live_prices_cache[ticker])
+    }
+
+
+@app.post("/api/chart-cache/{ticker}")
+async def add_chart_price(ticker: str, price: float):
+    """Add a live price point to the cache"""
+    ticker = ticker.upper()
+    state.add_live_price(ticker, price)
+    return {"status": "ok", "ticker": ticker, "price": price}
+
+
+@app.post("/api/chart-cache/batch")
+async def add_chart_prices_batch(prices: Dict[str, float]):
+    """Add multiple live price points at once"""
+    for ticker, price in prices.items():
+        if price is not None and price > 0:
+            state.add_live_price(ticker.upper(), float(price))
+    
+    # Save cache periodically (every 10 updates or so)
+    if sum(len(v) for v in state.live_prices_cache.values()) % 10 == 0:
+        state.save_chart_cache()
+    
+    return {"status": "ok", "count": len(prices)}
+
+
+@app.delete("/api/chart-cache")
+async def clear_chart_cache():
+    """Clear all cached chart data"""
+    state.live_prices_cache = {}
+    state.save_chart_cache()
+    return {"status": "cleared"}
 
 
 @app.get("/api/sectors")
@@ -600,6 +701,11 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     logger.info("🛑 Server shutting down...")
+    
+    # Save chart cache before shutdown
+    state.save_chart_cache()
+    logger.info("💾 Chart cache saved")
+    
     if state.scheduler.running:
         state.scheduler.shutdown()
 
