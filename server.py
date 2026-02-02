@@ -293,31 +293,7 @@ async def get_chart_cache():
     }
 
 
-@app.get("/api/chart-cache/{ticker}")
-async def get_chart_cache_ticker(ticker: str):
-    """Get cached live price data for a specific ticker"""
-    ticker = ticker.upper()
-    if ticker not in state.live_prices_cache:
-        return {"prices": [], "ticker": ticker}
-    return {
-        "prices": state.live_prices_cache[ticker],
-        "ticker": ticker,
-        "count": len(state.live_prices_cache[ticker])
-    }
-
-
-@app.post("/api/chart-cache/{ticker}")
-async def add_chart_price(ticker: str = FastapiPath(...), update: PriceUpdate = None):
-    """Add a live price point to the cache"""
-    if ticker.lower() == "batch":
-        raise HTTPException(status_code=404, detail="Not found")
-    ticker = ticker.upper()
-    if update is None:
-        raise HTTPException(status_code=422, detail="Missing price in request body")
-    state.add_live_price(ticker, update.price)
-    return {"status": "ok", "ticker": ticker, "price": update.price}
-
-
+# IMPORTANT: /batch must come BEFORE /{ticker} so FastAPI matches it first
 @app.post("/api/chart-cache/batch")
 async def add_chart_prices_batch(prices: Dict[str, float]):
     """Add multiple live price points at once"""
@@ -348,6 +324,29 @@ async def clear_chart_cache():
     state.live_prices_cache = {}
     state.save_chart_cache()
     return {"status": "cleared"}
+
+
+@app.get("/api/chart-cache/{ticker}")
+async def get_chart_cache_ticker(ticker: str):
+    """Get cached live price data for a specific ticker"""
+    ticker = ticker.upper()
+    if ticker not in state.live_prices_cache:
+        return {"prices": [], "ticker": ticker}
+    return {
+        "prices": state.live_prices_cache[ticker],
+        "ticker": ticker,
+        "count": len(state.live_prices_cache[ticker])
+    }
+
+
+@app.post("/api/chart-cache/{ticker}")
+async def add_chart_price(ticker: str = FastapiPath(...), update: PriceUpdate = None):
+    """Add a live price point to the cache"""
+    ticker = ticker.upper()
+    if update is None:
+        raise HTTPException(status_code=422, detail="Missing price in request body")
+    state.add_live_price(ticker, update.price)
+    return {"status": "ok", "ticker": ticker, "price": update.price}
 
 
 @app.get("/api/sectors")
