@@ -304,11 +304,11 @@ async def get_chart_cache_ticker(ticker: str):
 
 
 @app.post("/api/chart-cache/{ticker}")
-async def add_chart_price(ticker: str, price: float):
+async def add_chart_price(ticker: str, update: PriceUpdate):
     """Add a live price point to the cache"""
     ticker = ticker.upper()
-    state.add_live_price(ticker, price)
-    return {"status": "ok", "ticker": ticker, "price": price}
+    state.add_live_price(ticker, update.price)
+    return {"status": "ok", "ticker": ticker, "price": update.price}
 
 
 @app.post("/api/chart-cache/batch")
@@ -758,6 +758,7 @@ def collect_live_prices():
         run_count = getattr(state, '_price_collection_count', 0) + 1
         state._price_collection_count = run_count
         
+        schedule_live_price_collection()
         if run_count % 20 == 0:
             state.save_chart_cache()
             logger.info(f"Chart cache saved: {added}/{len(TOP_STOCKS)} prices collected")
