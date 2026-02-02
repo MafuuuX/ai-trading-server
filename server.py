@@ -307,8 +307,10 @@ async def get_chart_cache_ticker(ticker: str):
 
 
 @app.post("/api/chart-cache/{ticker}")
-async def add_chart_price(ticker: str = FastapiPath(..., pattern=r"^(?!batch$).+"), update: PriceUpdate = None):
+async def add_chart_price(ticker: str = FastapiPath(...), update: PriceUpdate = None):
     """Add a live price point to the cache"""
+    if ticker.lower() == "batch":
+        raise HTTPException(status_code=404, detail="Not found")
     ticker = ticker.upper()
     if update is None:
         raise HTTPException(status_code=422, detail="Missing price in request body")
