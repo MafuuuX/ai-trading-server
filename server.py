@@ -16,7 +16,7 @@ import secrets
 import hmac
 import psutil
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form, Path
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form, Path as FastapiPath
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -307,7 +307,7 @@ async def get_chart_cache_ticker(ticker: str):
 
 
 @app.post("/api/chart-cache/{ticker}")
-async def add_chart_price(ticker: str = Path(..., pattern=r"^(?!batch$).+"), update: PriceUpdate = None):
+async def add_chart_price(ticker: str = FastapiPath(..., pattern=r"^(?!batch$).+"), update: PriceUpdate = None):
     """Add a live price point to the cache"""
     ticker = ticker.upper()
     if update is None:
