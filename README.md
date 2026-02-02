@@ -336,7 +336,14 @@ Response: {
 - **Classification**: 3-class (DOWN/NEUTRAL/UP)
 - **Regression**: Percentage change prediction
 - **Lookback**: 30 days
-- **Features**: 12 technical indicators (RSI, MACD, Bollinger Bands, ATR, SMA, etc.)
+- **Features**: 7 technical indicators
+  - RSI (14-period)
+  - MACD
+  - Bollinger Bands (High & Low)
+  - ATR (Average True Range)
+  - SMA (20-day & 50-day)
+  - Returns & Volatility
+- **Architecture**: Dual-head LSTM (shared layers, separate classification & regression heads)
 
 ## Client Integration
 
