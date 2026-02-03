@@ -314,6 +314,59 @@ Response: {
   - Price updates (if configured)
   - Custom events from server
 
+### Trade Journal & Outcomes
+- `GET /api/trades` - Get trade journal entries
+- `POST /api/trades` - Log a new trade
+- `POST /api/trades/close` - Close an open trade with outcome
+- `GET /api/trades/analytics` - Get trading analytics and win rates
+- `GET /api/trade-outcomes` - Get trade outcomes for RL
+- `POST /api/trade-outcomes` - Record trade outcome for RL training
+
+### Reinforcement Learning
+- `GET /api/rl/config` - Get RL configuration and status
+- `POST /api/rl/config` - Update RL configuration
+- `POST /api/rl/trigger` - Manually trigger RL training
+- `POST /api/rl/trigger?force=true` - Force RL training regardless of conditions
+
+## Reinforcement Learning from Trade Outcomes
+
+The server supports **confidence-based reinforcement learning** that improves model predictions based on actual trade outcomes.
+
+### How It Works
+
+1. **Trade Reporting**: Client automatically reports trades when positions are opened/closed
+2. **Outcome Recording**: Each closed trade is recorded with:
+   - Entry/exit prices
+   - Realized P&L
+   - Model confidence at entry
+   - Holding duration
+3. **Weighted Sample Training**: 
+   - High confidence + WIN = Strong positive weight (model was right)
+   - High confidence + LOSS = Strong negative weight (penalize overconfidence)
+   - Low confidence + WIN = Moderate positive weight
+   - Low confidence + LOSS = Moderate negative weight
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `enabled` | `true` | Enable/disable RL training |
+| `min_trades_required` | `20` | Minimum closed trades before RL activates |
+| `rl_training_interval_hours` | `24` | Hours between RL training runs |
+| `confidence_weight_factor` | `2.0` | Multiplier for confidence-based weighting |
+| `pnl_weight_cap` | `3.0` | Maximum sample weight multiplier |
+
+### Dashboard Controls
+
+The server dashboard includes an "🧠 Reinforcement Learning" section with:
+- Current RL status (Ready/Not Ready)
+- Number of closed trades
+- Minimum trades required
+- Last RL training timestamp
+- Enable/disable toggle
+- Min trades configuration
+- Manual trigger buttons
+
 ## Stock Coverage
 
 **135 stocks** across:

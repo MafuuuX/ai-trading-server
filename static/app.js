@@ -218,6 +218,24 @@ async function refreshLogs() {
   }
 }
 
+// Download currently displayed logs as a .log file (user-requested feature)
+function downloadLogs() {
+  const logBox = document.getElementById('logBox');
+  if (!logBox) return alert('No logs available');
+  const text = logBox.textContent || '';
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  a.href = url;
+  a.download = `server-logs-${stamp}.log`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 let lastPerfUpdate = 0;
 async function refreshPerformance() {
   const grid = document.getElementById("performanceGrid");
@@ -340,6 +358,73 @@ async function trainSector() {
   }
 }
 
+// ============================================================================
+// REINFORCEMENT LEARNING CONTROLS
+// ============================================================================
+
+async function refreshRLStatus() {
+  try {
+    const data = await fetchJson("/api/rl/config");
+    const config = data.config || {};
+    const status = data.status || {};
+    
+    document.getElementById("rlStatus").textContent = status.ready ? "✅ Ready" : "⏳ " + (status.reason || "Not ready");
+    document.getElementById("rlTrades").textContent = status.closed_trades || 0;
+    document.getElementById("rlMinTrades").textContent = config.min_trades_required || 20;
+    document.getElementById("rlLastTraining").textContent = config.last_rl_training ? formatTime(config.last_rl_training) : "Never";
+    
+    document.getElementById("rlEnabled").checked = config.enabled !== false;
+    document.getElementById("rlMinTradesInput").value = config.min_trades_required || 20;
+  } catch (e) {
+    document.getElementById("rlStatus").textContent = "Error loading";
+  }
+}
+
+async function toggleRL() {
+  const enabled = document.getElementById("rlEnabled").checked;
+  try {
+    await fetchJson("/api/rl/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled })
+    });
+    await refreshRLStatus();
+  } catch (e) {
+    alert(`Failed to toggle RL: ${e}`);
+  }
+}
+
+async function saveRLConfig() {
+  const enabled = document.getElementById("rlEnabled").checked;
+  const minTrades = parseInt(document.getElementById("rlMinTradesInput").value) || 20;
+  try {
+    await fetchJson("/api/rl/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled, min_trades_required: minTrades })
+    });
+    await refreshRLStatus();
+    alert("RL config saved!");
+  } catch (e) {
+    alert(`Failed to save RL config: ${e}`);
+  }
+}
+
+async function triggerRL(force = false) {
+  try {
+    const url = force ? "/api/rl/trigger?force=true" : "/api/rl/trigger";
+    const result = await fetchJson(url, { method: "POST" });
+    if (result.status === "queued") {
+      alert(`RL training queued with ${result.trade_count} trades`);
+    } else {
+      alert(`RL training skipped: ${result.reason}`);
+    }
+    await refreshRLStatus();
+  } catch (e) {
+    alert(`Failed to trigger RL training: ${e}`);
+  }
+}
+
 async function refreshAll() {
   // Update every 3 seconds: health, training status, queue
   await Promise.all([
@@ -350,10 +435,11 @@ async function refreshAll() {
 }
 
 async function refreshInfrequent() {
-  // Update every 10 seconds: metrics, models
+  // Update every 10 seconds: metrics, models, RL status
   await Promise.all([
     refreshMetrics(),
-    refreshModels()
+    refreshModels(),
+    refreshRLStatus()
   ]);
 }
 

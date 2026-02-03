@@ -106,11 +106,53 @@
     </section>
 
     <section class="card">
+      <h2>🧠 Reinforcement Learning</h2>
+      <div class="grid">
+        <div>
+          <div class="label">Status</div>
+          <div id="rlStatus" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Closed Trades</div>
+          <div id="rlTrades" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Min Trades Required</div>
+          <div id="rlMinTrades" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Last RL Training</div>
+          <div id="rlLastTraining" class="value">—</div>
+        </div>
+      </div>
+      <div class="rl-controls" style="margin-top: 16px;">
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <label style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="rlEnabled" onchange="toggleRL()" checked>
+            <span>Enable RL Training</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 8px;">
+            <span>Min Trades:</span>
+            <input type="number" id="rlMinTradesInput" min="5" max="100" value="20" style="width: 60px;">
+          </label>
+          <button onclick="saveRLConfig()">Save Config</button>
+          <button class="secondary" onclick="triggerRL()">Trigger RL Training</button>
+          <button class="secondary" onclick="triggerRL(true)">Force RL Training</button>
+        <div>
+          <div class="label">Min Trades Required</div>
+          <div id="rlMinTrades" class="value">20</div>
+        </div>
+    <section class="card">
       <h2>Server Logs</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+        <button onclick="downloadLogs()">Download Logs</button>
+        <button class="secondary" onclick="refreshLogs()">Refresh Logs</button>
+        <div style="margin-left:auto;font-size:0.9em;color:#666;">Shown = recent log lines</div>
+      </div>
       <pre id="logBox" class="logs">Loading...</pre>
     </section>
   </main>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260203T1510"></script>
 </body>
 </html>
