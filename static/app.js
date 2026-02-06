@@ -426,105 +426,12 @@ async function triggerRL(force = false) {
 }
 
 // ============================================================================
-// RISK MANAGEMENT CONTROLS
+// RISK MANAGEMENT (READ-ONLY - Client controlled)
 // ============================================================================
 
-let lastRiskData = {};
-async function refreshRiskProfile() {
-  try {
-    const data = await fetchJson("/api/risk/current");
-    const profile = data.profile || {};
-    const effective = data.effective_settings || {};
-    
-    const profileName = profile.name || "—";
-    const level = profile.level || 5;
-    const positionSize = effective.position_size?.toFixed(1) || profile.position_size_default?.toFixed(1) || "—";
-    const stopLoss = effective.stop_loss?.toFixed(1) || profile.stop_loss_default?.toFixed(1) || "—";
-    const takeProfit = effective.take_profit?.toFixed(1) || profile.take_profit_default?.toFixed(1) || "—";
-    const maxTrades = effective.max_concurrent_trades || profile.max_concurrent_trades || "—";
-    
-    // Only update if changed
-    if (profileName !== lastRiskData.profileName) {
-      document.getElementById("riskProfileName").textContent = profileName;
-      lastRiskData.profileName = profileName;
-      updateProfileButtonHighlight(profile.name?.toLowerCase());
-    }
-    if (level !== lastRiskData.level) {
-      document.getElementById("riskLevel").textContent = `${level}/10`;
-      document.getElementById("riskLevelSlider").value = level;
-      document.getElementById("riskLevelValue").textContent = level;
-      lastRiskData.level = level;
-      updateRiskWarning(level);
-    }
-    if (positionSize !== lastRiskData.positionSize) {
-      document.getElementById("riskPositionSize").textContent = `${positionSize}%`;
-      lastRiskData.positionSize = positionSize;
-    }
-    if (stopLoss !== lastRiskData.stopLoss) {
-      document.getElementById("riskStopLoss").textContent = `${stopLoss}%`;
-      lastRiskData.stopLoss = stopLoss;
-    }
-    if (takeProfit !== lastRiskData.takeProfit) {
-      document.getElementById("riskTakeProfit").textContent = `${takeProfit}%`;
-      lastRiskData.takeProfit = takeProfit;
-    }
-    if (maxTrades !== lastRiskData.maxTrades) {
-      document.getElementById("riskMaxTrades").textContent = maxTrades;
-      lastRiskData.maxTrades = maxTrades;
-    }
-  } catch (e) {
-    console.error("Error loading risk profile:", e);
-  }
-}
-
-function updateProfileButtonHighlight(activeProfile) {
-  document.querySelectorAll('.profile-btn').forEach(btn => {
-    btn.classList.remove('active');
-  });
-  if (activeProfile) {
-    const btn = document.querySelector(`.profile-btn.${activeProfile}`);
-    if (btn) btn.classList.add('active');
-  }
-}
-
-function updateRiskWarning(level) {
-  const warning = document.getElementById("riskWarning");
-  if (warning) {
-    warning.style.display = level >= 7 ? "block" : "none";
-  }
-}
-
-function updateRiskLevelDisplay(value) {
-  document.getElementById("riskLevelValue").textContent = value;
-  updateRiskWarning(parseInt(value));
-}
-
-async function setRiskProfile(profileName) {
-  try {
-    await fetchJson("/api/risk/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile_name: profileName })
-    });
-    await refreshRiskProfile();
-  } catch (e) {
-    alert(`Failed to set profile: ${e}`);
-  }
-}
-
-async function applyRiskLevel() {
-  const level = parseInt(document.getElementById("riskLevelSlider").value);
-  try {
-    await fetchJson("/api/risk/profile", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ risk_level: level })
-    });
-    await refreshRiskProfile();
-  } catch (e) {
-    alert(`Failed to apply risk level: ${e}`);
-  }
-}
+// Risk profiles are controlled by each client in their app settings.
+// The server dashboard only shows information, no controls.
+// This keeps clients in full control of their risk parameters.
 
 // ============================================================================
 // SIMULATION CONTROLS
@@ -636,12 +543,12 @@ async function refreshAll() {
 }
 
 async function refreshInfrequent() {
-  // Update every 10 seconds: metrics, models, RL status, risk, simulation
+  // Update every 10 seconds: metrics, models, RL status, simulation
+  // Note: Risk profiles are client-controlled, no server refresh needed
   await Promise.all([
     refreshMetrics(),
     refreshModels(),
     refreshRLStatus(),
-    refreshRiskProfile(),
     refreshSimStatus()
   ]);
 }

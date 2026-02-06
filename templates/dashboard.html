@@ -143,51 +143,35 @@
     </section>
 
     <section class="card">
-      <h2>⚖️ Risk Management</h2>
-      <div class="grid">
-        <div>
-          <div class="label">Current Profile</div>
-          <div id="riskProfileName" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Risk Level</div>
-          <div id="riskLevel" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Position Size</div>
-          <div id="riskPositionSize" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Stop Loss</div>
-          <div id="riskStopLoss" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Take Profit</div>
-          <div id="riskTakeProfit" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Max Trades</div>
-          <div id="riskMaxTrades" class="value">—</div>
-        </div>
-      </div>
-      <div class="risk-controls" style="margin-top: 16px;">
-        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 16px;">
-          <div class="profile-buttons">
-            <button class="profile-btn conservative" onclick="setRiskProfile('conservative')" title="1-2% position, tight stops">🛡️ Sicher</button>
-            <button class="profile-btn balanced" onclick="setRiskProfile('balanced')" title="2-5% position, balanced risk/reward">⚖️ Ausgewogen</button>
-            <button class="profile-btn aggressive" onclick="setRiskProfile('aggressive')" title="5-10% position, aggressive targets">🚀 Riskant</button>
+      <h2>⚖️ Risk Management (Client-Controlled)</h2>
+      <div class="client-controlled-notice" style="background: #1e3a5f; border: 1px solid #3b82f6; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 20px;">🔒</span>
+          <div>
+            <div style="font-weight: 600; color: #60a5fa;">Risikoprofile werden vom Client gesteuert</div>
+            <div style="font-size: 12px; color: #93c5fd; margin-top: 4px;">
+              Jeder Client wählt sein eigenes Risikoprofil in den App-Einstellungen. 
+              Der Server kann diese Einstellungen nicht ändern.
+            </div>
           </div>
         </div>
-        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
-          <label style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 300px;">
-            <span style="white-space: nowrap;">Risk Level (1-10):</span>
-            <input type="range" id="riskLevelSlider" min="1" max="10" value="5" style="flex: 1;" oninput="updateRiskLevelDisplay(this.value)">
-            <span id="riskLevelValue" style="min-width: 30px; text-align: center;">5</span>
-          </label>
-          <button onclick="applyRiskLevel()">Apply Level</button>
+      </div>
+      <div class="grid">
+        <div>
+          <div class="label">Available Profiles</div>
+          <div class="value" style="font-size: 14px;">🛡️ Sicher | ⚖️ Ausgewogen | 🚀 Riskant</div>
         </div>
-        <div class="risk-warning" id="riskWarning" style="display: none; margin-top: 12px; padding: 8px 12px; background: #ff6b6b22; border: 1px solid #ff6b6b; border-radius: 6px; color: #ff6b6b;">
-          ⚠️ High risk settings detected. Monitor positions closely.
+        <div>
+          <div class="label">Risk Levels</div>
+          <div class="value" style="font-size: 14px;">1-10 (Client-selectable)</div>
+        </div>
+      </div>
+      <div style="margin-top: 16px; padding: 12px; background: #0f1117; border-radius: 6px;">
+        <div style="font-size: 12px; color: #9ca3af;">
+          <strong>Profile-Details:</strong><br>
+          • <strong>Sicher (Level 1-3):</strong> 1-2% Position, 2% Stop-Loss, 4% Take-Profit, max 2 Trades<br>
+          • <strong>Ausgewogen (Level 4-6):</strong> 2-5% Position, 3% Stop-Loss, 6% Take-Profit, max 4 Trades<br>
+          • <strong>Riskant (Level 7-10):</strong> 5-10% Position, 5% Stop-Loss, 10% Take-Profit, max 6 Trades
         </div>
       </div>
     </section>
