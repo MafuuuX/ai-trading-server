@@ -138,10 +138,101 @@
           <button onclick="saveRLConfig()">Save Config</button>
           <button class="secondary" onclick="triggerRL()">Trigger RL Training</button>
           <button class="secondary" onclick="triggerRL(true)">Force RL Training</button>
-        <div>
-          <div class="label">Min Trades Required</div>
-          <div id="rlMinTrades" class="value">20</div>
         </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>⚖️ Risk Management</h2>
+      <div class="grid">
+        <div>
+          <div class="label">Current Profile</div>
+          <div id="riskProfileName" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Risk Level</div>
+          <div id="riskLevel" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Position Size</div>
+          <div id="riskPositionSize" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Stop Loss</div>
+          <div id="riskStopLoss" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Take Profit</div>
+          <div id="riskTakeProfit" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Max Trades</div>
+          <div id="riskMaxTrades" class="value">—</div>
+        </div>
+      </div>
+      <div class="risk-controls" style="margin-top: 16px;">
+        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 16px;">
+          <div class="profile-buttons">
+            <button class="profile-btn conservative" onclick="setRiskProfile('conservative')" title="1-2% position, tight stops">🛡️ Sicher</button>
+            <button class="profile-btn balanced" onclick="setRiskProfile('balanced')" title="2-5% position, balanced risk/reward">⚖️ Ausgewogen</button>
+            <button class="profile-btn aggressive" onclick="setRiskProfile('aggressive')" title="5-10% position, aggressive targets">🚀 Riskant</button>
+          </div>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+          <label style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 300px;">
+            <span style="white-space: nowrap;">Risk Level (1-10):</span>
+            <input type="range" id="riskLevelSlider" min="1" max="10" value="5" style="flex: 1;" oninput="updateRiskLevelDisplay(this.value)">
+            <span id="riskLevelValue" style="min-width: 30px; text-align: center;">5</span>
+          </label>
+          <button onclick="applyRiskLevel()">Apply Level</button>
+        </div>
+        <div class="risk-warning" id="riskWarning" style="display: none; margin-top: 12px; padding: 8px 12px; background: #ff6b6b22; border: 1px solid #ff6b6b; border-radius: 6px; color: #ff6b6b;">
+          ⚠️ High risk settings detected. Monitor positions closely.
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>📊 Backtesting & Simulation</h2>
+      <div class="grid">
+        <div>
+          <div class="label">Simulation Status</div>
+          <div id="simStatus" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Progress</div>
+          <div id="simProgress" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Last Result</div>
+          <div id="simLastReturn" class="value">—</div>
+        </div>
+        <div>
+          <div class="label">Sharpe Ratio</div>
+          <div id="simSharpe" class="value">—</div>
+        </div>
+      </div>
+      <div id="simResultsPanel" style="display: none; margin-top: 16px; padding: 16px; background: #1a1a2e; border-radius: 8px;">
+        <h4 style="margin: 0 0 12px 0;">Last Simulation Results</h4>
+        <div class="grid">
+          <div><span class="label">Total Return</span><span id="simTotalReturn" class="value">—</span></div>
+          <div><span class="label">Win Rate</span><span id="simWinRate" class="value">—</span></div>
+          <div><span class="label">Max Drawdown</span><span id="simMaxDrawdown" class="value">—</span></div>
+          <div><span class="label">Profit Factor</span><span id="simProfitFactor" class="value">—</span></div>
+          <div><span class="label">Total Trades</span><span id="simTotalTrades" class="value">—</span></div>
+          <div><span class="label">Avg Hold Time</span><span id="simAvgHold" class="value">—</span></div>
+        </div>
+      </div>
+      <div class="sim-controls" style="margin-top: 16px;">
+        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+          <button onclick="runSimulation()">▶️ Run Simulation</button>
+          <button class="secondary" onclick="compareProfiles()">📊 Compare Profiles</button>
+          <button class="secondary" onclick="optimizeLevel()">🎯 Find Optimal Level</button>
+          <button class="secondary" onclick="refreshSimStatus()">🔄 Refresh</button>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <h2>Server Logs</h2>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">

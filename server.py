@@ -36,6 +36,11 @@ import pandas as pd
 
 from data_fetcher import CachedDataFetcher, TOP_STOCKS, get_live_prices
 from trainer import ModelTrainer
+from risk_profiles import (
+    RiskProfile, RiskManager, PROFILES, CONSERVATIVE_PROFILE,
+    BALANCED_PROFILE, AGGRESSIVE_PROFILE, interpolate_profile
+)
+from simulator import TradingSimulator, create_simulator
 
 # Sector mapping for Train Sector
 SECTORS = {
@@ -461,6 +466,10 @@ class ServerState:
 
 state = ServerState()
 
+# Initialize risk manager and simulator after state
+risk_manager = RiskManager()
+simulator = create_simulator(state.fetcher)
+
 
 class InMemoryLogHandler(logging.Handler):
     def emit(self, record):
@@ -508,6 +517,24 @@ class HealthResponse(BaseModel):
 
 class PriceUpdate(BaseModel):
     price: float
+
+
+# Risk Management Models
+class RiskProfileUpdate(BaseModel):
+    profile_name: Optional[str] = None  # 'conservative', 'balanced', 'aggressive'
+    risk_level: Optional[int] = Field(None, ge=1, le=10)
+    overrides: Optional[Dict[str, Any]] = None
+
+
+class SimulationRequest(BaseModel):
+    tickers: Optional[List[str]] = None  # Defaults to TOP_STOCKS
+    profile_name: Optional[str] = "balanced"
+    risk_level: Optional[int] = Field(None, ge=1, le=10)
+    start_date: Optional[str] = None  # YYYY-MM-DD
+    end_date: Optional[str] = None
+    initial_capital: Optional[float] = 100000.0
+    use_predictions: Optional[bool] = False
+
 
 # ============================================================================
 # HEALTH & INFO ENDPOINTS
@@ -1173,6 +1200,257 @@ def calculate_rl_sample_weights(trades: List[Dict]) -> List[float]:
         weights.append(weight)
     
     return weights
+
+
+# ============================================================================
+# RISK MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.get("/api/risk/profiles")
+async def get_risk_profiles():
+    """Get all available risk profiles"""
+    profiles_info = {}
+    for name, profile in PROFILES.items():
+        profiles_info[name] = {
+            "name": profile.name,
+            "level": profile.level,
+            "description": profile.description,
+            "position_size_default": profile.position_size_default,
+            "stop_loss_default": profile.stop_loss_default,
+            "take_profit_default": profile.take_profit_default,
+            "risk_reward_ratio": profile.risk_reward_ratio,
+            "max_concurrent_trades": profile.max_concurrent_trades,
+            "min_confidence": profile.min_confidence
+        }
+    return {"profiles": profiles_info}
+
+
+@app.get("/api/risk/current")
+async def get_current_risk_profile():
+    """Get current risk profile settings"""
+    profile = risk_manager.get_current_profile()
+    return {
+        "profile": {
+            "name": profile.name,
+            "level": profile.level,
+            "description": profile.description,
+            "position_size_min": profile.position_size_min,
+            "position_size_max": profile.position_size_max,
+            "position_size_default": profile.position_size_default,
+            "stop_loss_min": profile.stop_loss_min,
+            "stop_loss_max": profile.stop_loss_max,
+            "stop_loss_default": profile.stop_loss_default,
+            "take_profit_min": profile.take_profit_min,
+            "take_profit_max": profile.take_profit_max,
+            "take_profit_default": profile.take_profit_default,
+            "risk_reward_ratio": profile.risk_reward_ratio,
+            "max_concurrent_trades": profile.max_concurrent_trades,
+            "min_confidence": profile.min_confidence,
+            "long_entry_threshold": profile.long_entry_threshold,
+            "short_entry_threshold": profile.short_entry_threshold,
+            "allow_shorts": profile.allow_shorts
+        },
+        "overrides": risk_manager.get_overrides(),
+        "effective_settings": {
+            "position_size": risk_manager.get_effective_value("position_size_default"),
+            "stop_loss": risk_manager.get_effective_value("stop_loss_default"),
+            "take_profit": risk_manager.get_effective_value("take_profit_default"),
+            "max_concurrent_trades": risk_manager.get_effective_value("max_concurrent_trades"),
+            "min_confidence": risk_manager.get_effective_value("min_confidence")
+        }
+    }
+
+
+@app.post("/api/risk/profile")
+async def update_risk_profile(update: RiskProfileUpdate):
+    """Update risk profile settings"""
+    try:
+        if update.profile_name:
+            success = risk_manager.set_profile(update.profile_name)
+            if not success:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid profile name: {update.profile_name}. Valid options: {list(PROFILES.keys())}"
+                )
+            logger.info(f"Risk profile changed to: {update.profile_name}")
+        
+        if update.risk_level is not None:
+            risk_manager.set_risk_level(update.risk_level)
+            logger.info(f"Risk level set to: {update.risk_level}")
+        
+        if update.overrides:
+            for key, value in update.overrides.items():
+                if value is None:
+                    risk_manager.clear_override(key)
+                else:
+                    risk_manager.set_override(key, value)
+            logger.info(f"Risk overrides updated: {update.overrides}")
+        
+        return await get_current_risk_profile()
+    except HTTPException:
+        raise
+    except Exception as e:
+        state.log_error("RISK_PROFILE", f"Failed to update risk profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/risk/overrides")
+async def clear_risk_overrides():
+    """Clear all risk parameter overrides"""
+    risk_manager.clear_all_overrides()
+    logger.info("All risk overrides cleared")
+    return {"status": "ok", "message": "All overrides cleared"}
+
+
+@app.get("/api/risk/calculate")
+async def calculate_risk_params(
+    capital: float = 100000,
+    confidence: float = 0.7,
+    current_price: float = 100.0,
+    expected_change: float = 2.0,
+    is_long: bool = True
+):
+    """Calculate risk parameters for a potential trade"""
+    position_size = risk_manager.calculate_position_size(capital, confidence)
+    stop_loss = risk_manager.get_stop_loss(current_price, is_long=is_long)
+    take_profit = risk_manager.get_take_profit(current_price, is_long=is_long)
+    should_enter, reason = risk_manager.should_enter_trade(
+        expected_change=expected_change,
+        confidence=confidence,
+        current_trades=0,
+        is_long=is_long
+    )
+    
+    return {
+        "position_size": position_size,
+        "position_size_pct": position_size / capital * 100,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "should_enter": should_enter,
+        "entry_reason": reason,
+        "risk_per_share": abs(current_price - stop_loss),
+        "reward_per_share": abs(take_profit - current_price)
+    }
+
+
+# ============================================================================
+# SIMULATION ENDPOINTS
+# ============================================================================
+
+@app.get("/api/simulation/status")
+async def get_simulation_status():
+    """Get current simulation status"""
+    return simulator.get_status()
+
+
+@app.get("/api/simulation/history")
+async def get_simulation_history(limit: int = 10):
+    """Get simulation history"""
+    return {"history": simulator.get_history(limit)}
+
+
+@app.post("/api/simulation/run")
+async def run_simulation(request: SimulationRequest, background_tasks: BackgroundTasks):
+    """Run a trading simulation"""
+    try:
+        if simulator.is_running:
+            raise HTTPException(status_code=409, detail="Simulation already running")
+        
+        # Determine profile
+        if request.risk_level is not None:
+            profile = interpolate_profile(request.risk_level)
+        elif request.profile_name:
+            profile = PROFILES.get(request.profile_name.lower())
+            if not profile:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid profile: {request.profile_name}. Valid: {list(PROFILES.keys())}"
+                )
+        else:
+            profile = risk_manager.get_current_profile()
+        
+        # Default tickers
+        tickers = request.tickers or TOP_STOCKS[:20]
+        
+        def run_sim():
+            try:
+                result = simulator.run_simulation(
+                    tickers=tickers,
+                    profile=profile,
+                    start_date=request.start_date,
+                    end_date=request.end_date,
+                    initial_capital=request.initial_capital,
+                    use_predictions=request.use_predictions
+                )
+                logger.info(f"Simulation complete: {result.total_trades} trades, "
+                           f"{result.total_return_pct:.2f}% return")
+            except Exception as e:
+                logger.error(f"Simulation failed: {e}")
+        
+        background_tasks.add_task(run_sim)
+        
+        return {
+            "status": "started",
+            "profile": profile.name,
+            "risk_level": profile.level,
+            "tickers": len(tickers),
+            "initial_capital": request.initial_capital
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        state.log_error("SIMULATION", f"Failed to start simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/simulation/compare")
+async def compare_profiles(background_tasks: BackgroundTasks):
+    """Compare all risk profiles via simulation"""
+    try:
+        if simulator.is_running:
+            raise HTTPException(status_code=409, detail="Simulation already running")
+        
+        tickers = TOP_STOCKS[:15]
+        
+        def run_compare():
+            try:
+                result = simulator.compare_profiles(tickers)
+                logger.info(f"Profile comparison complete. Best: {result.get('best_profile')}")
+            except Exception as e:
+                logger.error(f"Profile comparison failed: {e}")
+        
+        background_tasks.add_task(run_compare)
+        
+        return {"status": "started", "message": "Comparing all profiles..."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/simulation/optimize")
+async def optimize_risk_level(background_tasks: BackgroundTasks):
+    """Find optimal risk level via simulation"""
+    try:
+        if simulator.is_running:
+            raise HTTPException(status_code=409, detail="Simulation already running")
+        
+        tickers = TOP_STOCKS[:15]
+        
+        def run_optimize():
+            try:
+                result = simulator.optimize_level(tickers)
+                logger.info(f"Optimization complete. Optimal level: {result.get('optimal_level')}")
+            except Exception as e:
+                logger.error(f"Optimization failed: {e}")
+        
+        background_tasks.add_task(run_optimize)
+        
+        return {"status": "started", "message": "Optimizing risk level..."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

@@ -425,6 +425,207 @@ async function triggerRL(force = false) {
   }
 }
 
+// ============================================================================
+// RISK MANAGEMENT CONTROLS
+// ============================================================================
+
+let lastRiskData = {};
+async function refreshRiskProfile() {
+  try {
+    const data = await fetchJson("/api/risk/current");
+    const profile = data.profile || {};
+    const effective = data.effective_settings || {};
+    
+    const profileName = profile.name || "—";
+    const level = profile.level || 5;
+    const positionSize = effective.position_size?.toFixed(1) || profile.position_size_default?.toFixed(1) || "—";
+    const stopLoss = effective.stop_loss?.toFixed(1) || profile.stop_loss_default?.toFixed(1) || "—";
+    const takeProfit = effective.take_profit?.toFixed(1) || profile.take_profit_default?.toFixed(1) || "—";
+    const maxTrades = effective.max_concurrent_trades || profile.max_concurrent_trades || "—";
+    
+    // Only update if changed
+    if (profileName !== lastRiskData.profileName) {
+      document.getElementById("riskProfileName").textContent = profileName;
+      lastRiskData.profileName = profileName;
+      updateProfileButtonHighlight(profile.name?.toLowerCase());
+    }
+    if (level !== lastRiskData.level) {
+      document.getElementById("riskLevel").textContent = `${level}/10`;
+      document.getElementById("riskLevelSlider").value = level;
+      document.getElementById("riskLevelValue").textContent = level;
+      lastRiskData.level = level;
+      updateRiskWarning(level);
+    }
+    if (positionSize !== lastRiskData.positionSize) {
+      document.getElementById("riskPositionSize").textContent = `${positionSize}%`;
+      lastRiskData.positionSize = positionSize;
+    }
+    if (stopLoss !== lastRiskData.stopLoss) {
+      document.getElementById("riskStopLoss").textContent = `${stopLoss}%`;
+      lastRiskData.stopLoss = stopLoss;
+    }
+    if (takeProfit !== lastRiskData.takeProfit) {
+      document.getElementById("riskTakeProfit").textContent = `${takeProfit}%`;
+      lastRiskData.takeProfit = takeProfit;
+    }
+    if (maxTrades !== lastRiskData.maxTrades) {
+      document.getElementById("riskMaxTrades").textContent = maxTrades;
+      lastRiskData.maxTrades = maxTrades;
+    }
+  } catch (e) {
+    console.error("Error loading risk profile:", e);
+  }
+}
+
+function updateProfileButtonHighlight(activeProfile) {
+  document.querySelectorAll('.profile-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  if (activeProfile) {
+    const btn = document.querySelector(`.profile-btn.${activeProfile}`);
+    if (btn) btn.classList.add('active');
+  }
+}
+
+function updateRiskWarning(level) {
+  const warning = document.getElementById("riskWarning");
+  if (warning) {
+    warning.style.display = level >= 7 ? "block" : "none";
+  }
+}
+
+function updateRiskLevelDisplay(value) {
+  document.getElementById("riskLevelValue").textContent = value;
+  updateRiskWarning(parseInt(value));
+}
+
+async function setRiskProfile(profileName) {
+  try {
+    await fetchJson("/api/risk/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile_name: profileName })
+    });
+    await refreshRiskProfile();
+  } catch (e) {
+    alert(`Failed to set profile: ${e}`);
+  }
+}
+
+async function applyRiskLevel() {
+  const level = parseInt(document.getElementById("riskLevelSlider").value);
+  try {
+    await fetchJson("/api/risk/profile", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ risk_level: level })
+    });
+    await refreshRiskProfile();
+  } catch (e) {
+    alert(`Failed to apply risk level: ${e}`);
+  }
+}
+
+// ============================================================================
+// SIMULATION CONTROLS
+// ============================================================================
+
+let lastSimData = {};
+async function refreshSimStatus() {
+  try {
+    const data = await fetchJson("/api/simulation/status");
+    
+    const status = data.is_running ? "🔄 Running" : "✅ Idle";
+    const progress = data.is_running ? `${data.progress?.toFixed(0) || 0}%` : "—";
+    
+    if (status !== lastSimData.status) {
+      document.getElementById("simStatus").textContent = status;
+      lastSimData.status = status;
+    }
+    if (progress !== lastSimData.progress) {
+      document.getElementById("simProgress").textContent = progress;
+      lastSimData.progress = progress;
+    }
+    
+    // Show last simulation results
+    const last = data.last_simulation;
+    if (last) {
+      const returnPct = last.total_return_pct?.toFixed(2) || "—";
+      const sharpe = last.sharpe_ratio?.toFixed(2) || "—";
+      
+      document.getElementById("simLastReturn").textContent = `${returnPct}%`;
+      document.getElementById("simSharpe").textContent = sharpe;
+      
+      // Show results panel
+      document.getElementById("simResultsPanel").style.display = "block";
+      document.getElementById("simTotalReturn").textContent = `$${last.total_return?.toFixed(0) || 0} (${returnPct}%)`;
+      document.getElementById("simWinRate").textContent = `${(last.win_rate * 100)?.toFixed(1) || 0}%`;
+      document.getElementById("simMaxDrawdown").textContent = `${last.max_drawdown_pct?.toFixed(2) || 0}%`;
+      document.getElementById("simProfitFactor").textContent = last.profit_factor?.toFixed(2) || "—";
+      document.getElementById("simTotalTrades").textContent = last.total_trades || 0;
+      document.getElementById("simAvgHold").textContent = `${(last.avg_hold_duration_hours / 24)?.toFixed(1) || 0} days`;
+    } else {
+      document.getElementById("simLastReturn").textContent = "—";
+      document.getElementById("simSharpe").textContent = "—";
+      document.getElementById("simResultsPanel").style.display = "none";
+    }
+  } catch (e) {
+    console.error("Error loading simulation status:", e);
+  }
+}
+
+async function runSimulation() {
+  try {
+    const result = await fetchJson("/api/simulation/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (result.status === "started") {
+      alert(`Simulation started: ${result.profile} profile, ${result.tickers} tickers`);
+    }
+    await refreshSimStatus();
+  } catch (e) {
+    if (e.message.includes("409")) {
+      alert("A simulation is already running. Please wait.");
+    } else {
+      alert(`Failed to start simulation: ${e}`);
+    }
+  }
+}
+
+async function compareProfiles() {
+  try {
+    const result = await fetchJson("/api/simulation/compare", { method: "POST" });
+    if (result.status === "started") {
+      alert("Profile comparison started. This may take several minutes.");
+    }
+    await refreshSimStatus();
+  } catch (e) {
+    if (e.message.includes("409")) {
+      alert("A simulation is already running. Please wait.");
+    } else {
+      alert(`Failed to compare profiles: ${e}`);
+    }
+  }
+}
+
+async function optimizeLevel() {
+  try {
+    const result = await fetchJson("/api/simulation/optimize", { method: "POST" });
+    if (result.status === "started") {
+      alert("Optimization started. This may take several minutes.");
+    }
+    await refreshSimStatus();
+  } catch (e) {
+    if (e.message.includes("409")) {
+      alert("A simulation is already running. Please wait.");
+    } else {
+      alert(`Failed to optimize level: ${e}`);
+    }
+  }
+}
+
 async function refreshAll() {
   // Update every 3 seconds: health, training status, queue
   await Promise.all([
@@ -435,11 +636,13 @@ async function refreshAll() {
 }
 
 async function refreshInfrequent() {
-  // Update every 10 seconds: metrics, models, RL status
+  // Update every 10 seconds: metrics, models, RL status, risk, simulation
   await Promise.all([
     refreshMetrics(),
     refreshModels(),
-    refreshRLStatus()
+    refreshRLStatus(),
+    refreshRiskProfile(),
+    refreshSimStatus()
   ]);
 }
 

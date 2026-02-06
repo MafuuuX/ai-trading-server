@@ -158,3 +158,125 @@ tr:hover { background: #101521; }
   color: #9aa3b2;
   font-size: 12px;
 }
+
+/* Risk Management Styles */
+.profile-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.profile-btn {
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  border: 2px solid transparent;
+}
+
+.profile-btn.conservative {
+  background: #0f5132;
+  color: #75b798;
+}
+
+.profile-btn.conservative:hover,
+.profile-btn.conservative.active {
+  background: #198754;
+  color: #fff;
+  border-color: #75b798;
+}
+
+.profile-btn.balanced {
+  background: #0c5460;
+  color: #6edff6;
+}
+
+.profile-btn.balanced:hover,
+.profile-btn.balanced.active {
+  background: #0dcaf0;
+  color: #000;
+  border-color: #6edff6;
+}
+
+.profile-btn.aggressive {
+  background: #842029;
+  color: #ea868f;
+}
+
+.profile-btn.aggressive:hover,
+.profile-btn.aggressive.active {
+  background: #dc3545;
+  color: #fff;
+  border-color: #ea868f;
+}
+
+/* Risk Slider */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 8px;
+  background: linear-gradient(to right, #198754, #ffc107, #dc3545);
+  border-radius: 4px;
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border: 2px solid #3b82f6;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  background: #fff;
+  border: 2px solid #3b82f6;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* Status Badges */
+.status-badge {
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.idle {
+  background: #4b5563;
+  color: #9ca3af;
+}
+
+.status-badge.training {
+  background: #0c5460;
+  color: #6edff6;
+}
+
+.status-badge.complete {
+  background: #0f5132;
+  color: #75b798;
+}
+
+/* Simulation Results Panel */
+#simResultsPanel .grid {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+#simResultsPanel .label {
+  display: block;
+  margin-bottom: 4px;
+}
+
+#simResultsPanel .value {
+  font-size: 16px;
+}
