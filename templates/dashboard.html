@@ -4,230 +4,344 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AI Trading Server</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260209" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
+
+  <!-- Top Navigation -->
   <header>
-    <div class="title">AI Trading Server</div>
-    <div id="healthBadge" class="badge">Checking...</div>
+    <div class="header-left">
+      <div class="logo">⚡</div>
+      <div class="title">AI Trading Server</div>
+    </div>
+    <div class="header-right">
+      <div id="healthBadge" class="badge">Checking...</div>
+      <div class="header-stat">
+        <span class="header-stat-label">Uptime</span>
+        <span id="headerUptime" class="header-stat-value">—</span>
+      </div>
+    </div>
   </header>
 
   <main>
-    <section class="card">
-      <h2>Status</h2>
-      <div class="grid">
+    <!-- Hero: Universal Model Card -->
+    <section class="card card-hero">
+      <div class="card-header">
+        <div class="card-icon">🧠</div>
         <div>
-          <div class="label">Uptime</div>
-          <div id="uptime" class="value">—</div>
+          <h2>Universal Model</h2>
+          <p class="card-subtitle">Single model trained on all tickers simultaneously</p>
         </div>
-        <div>
-          <div class="label">CPU</div>
-          <div id="cpu" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">RAM</div>
-          <div id="ram" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Active Models</div>
-          <div id="activeModels" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Training Queue</div>
-          <div id="trainingQueue" class="value">—</div>
+        <div class="card-header-actions">
+          <span id="uniVersionBadge" class="version-badge">—</span>
+          <span id="uniStatusBadge" class="status-badge idle">idle</span>
         </div>
       </div>
-      <div class="actions">
-        <button onclick="refreshAll()">Refresh</button>
-        <button class="secondary" onclick="trainBatch()">Train Batch (Top 10)</button>
-        <button class="secondary" onclick="trainAll()">Train All</button>
-        <select id="sectorSelect"></select>
-        <button class="secondary" onclick="trainSector()">Train Sector</button>
+
+      <!-- Progress Bar (visible during training) -->
+      <div id="uniProgressContainer" class="uni-progress-container" style="display:none;">
+        <div class="uni-progress-bar">
+          <div id="uniProgressFill" class="uni-progress-fill" style="width:0%"></div>
+        </div>
+        <div class="uni-progress-info">
+          <span id="uniProgressPct">0%</span>
+          <span id="uniProgressMsg">—</span>
+        </div>
       </div>
-    </section>
 
-    <section class="card">
-      <h2>Models</h2>
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Version</th>
-              <th>Trained At</th>
-              <th>Size</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="modelsTable">
-            <tr><td colspan="5">Loading...</td></tr>
-          </tbody>
-        </table>
+      <!-- Metrics Grid -->
+      <div class="metrics-row">
+        <div class="metric-box">
+          <div class="metric-label">Classification Accuracy</div>
+          <div id="uniAccuracy" class="metric-value accent-green">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Regression MAE</div>
+          <div id="uniMAE" class="metric-value accent-blue">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Tickers Used</div>
+          <div id="uniTickers" class="metric-value">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Training Samples</div>
+          <div id="uniSamples" class="metric-value">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Last Trained</div>
+          <div id="uniLastTrained" class="metric-value metric-value-sm">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Duration</div>
+          <div id="uniDuration" class="metric-value">—</div>
+        </div>
       </div>
-    </section>
 
-    <section class="card">
-      <h2>Model Performance</h2>
-      <div id="performanceGrid" class="grid"></div>
-    </section>
-
-    <section class="card">
-      <h2>Training Queue</h2>
-      <div class="queue">
-        <div id="queueList">Loading...</div>
-        <div id="queueEta" class="eta">ETA: —</div>
+      <div class="card-actions">
+        <button class="btn btn-primary" onclick="trainUniversal()">
+          <span class="btn-icon">🚀</span> Train Universal Model
+        </button>
+        <button class="btn btn-secondary" onclick="refreshUniversalStatus()">
+          <span class="btn-icon">🔄</span> Refresh
+        </button>
       </div>
     </section>
 
-    <section class="card">
-      <h2>Training Status</h2>
-      <div class="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Ticker</th>
-              <th>Status</th>
-              <th>Progress</th>
-              <th>Last Trained</th>
-              <th>Next Training</th>
-              <th>Action</th>
-            </tr>
-          </thead>
-          <tbody id="trainingTable">
-            <tr><td colspan="5">Loading...</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Training History</h2>
-      <div id="historyList" class="timeline">Loading...</div>
-    </section>
-
-    <section class="card">
-      <h2>🧠 Reinforcement Learning</h2>
-      <div class="grid">
-        <div>
-          <div class="label">Status</div>
-          <div id="rlStatus" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Closed Trades</div>
-          <div id="rlTrades" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Min Trades Required</div>
-          <div id="rlMinTrades" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Last RL Training</div>
-          <div id="rlLastTraining" class="value">—</div>
+    <!-- System Stats Row -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="stat-icon">💻</div>
+        <div class="stat-content">
+          <div class="stat-label">CPU</div>
+          <div id="cpu" class="stat-value">—</div>
         </div>
       </div>
-      <div class="rl-controls" style="margin-top: 16px;">
-        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-          <label style="display: flex; align-items: center; gap: 8px;">
-            <input type="checkbox" id="rlEnabled" onchange="toggleRL()" checked>
-            <span>Enable RL Training</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 8px;">
-            <span>Min Trades:</span>
-            <input type="number" id="rlMinTradesInput" min="5" max="100" value="20" style="width: 60px;">
-          </label>
-          <button onclick="saveRLConfig()">Save Config</button>
-          <button class="secondary" onclick="triggerRL()">Trigger RL Training</button>
-          <button class="secondary" onclick="triggerRL(true)">Force RL Training</button>
+      <div class="stat-card">
+        <div class="stat-icon">🧮</div>
+        <div class="stat-content">
+          <div class="stat-label">RAM</div>
+          <div id="ram" class="stat-value">—</div>
         </div>
       </div>
-    </section>
+      <div class="stat-card">
+        <div class="stat-icon">📦</div>
+        <div class="stat-content">
+          <div class="stat-label">Active Models</div>
+          <div id="activeModels" class="stat-value">—</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">⏳</div>
+        <div class="stat-content">
+          <div class="stat-label">Training Queue</div>
+          <div id="trainingQueue" class="stat-value">—</div>
+        </div>
+      </div>
+    </div>
 
-    <section class="card">
-      <h2>⚖️ Risk Management (Client-Controlled)</h2>
-      <div class="client-controlled-notice" style="background: #1e3a5f; border: 1px solid #3b82f6; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <span style="font-size: 20px;">🔒</span>
-          <div>
-            <div style="font-weight: 600; color: #60a5fa;">Risikoprofile werden vom Client gesteuert</div>
-            <div style="font-size: 12px; color: #93c5fd; margin-top: 4px;">
-              Jeder Client wählt sein eigenes Risikoprofil in den App-Einstellungen. 
-              Der Server kann diese Einstellungen nicht ändern.
+    <!-- Two-Column Layout -->
+    <div class="two-col">
+
+      <!-- Left Column -->
+      <div class="col">
+
+        <!-- Per-Ticker Models Table -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon">📊</div>
+            <h2>Per-Ticker Models <span class="legacy-tag">Legacy</span></h2>
+          </div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Version</th>
+                  <th>Trained At</th>
+                  <th>Size</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="modelsTable">
+                <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-secondary" onclick="trainBatch()">Train Batch (Top 10)</button>
+            <select id="sectorSelect" class="select-input"></select>
+            <button class="btn btn-secondary" onclick="trainSector()">Train Sector</button>
+          </div>
+        </section>
+
+        <!-- Training Status -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon">⚙️</div>
+            <h2>Training Queue & Status</h2>
+          </div>
+          <div class="queue-box">
+            <div id="queueList" class="queue-text">Loading...</div>
+            <div id="queueEta" class="queue-eta">ETA: —</div>
+          </div>
+          <div class="table-wrapper" style="margin-top:12px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Status</th>
+                  <th>Progress</th>
+                  <th>Last Trained</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="trainingTable">
+                <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Right Column -->
+      <div class="col">
+
+        <!-- Model Performance -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon">📈</div>
+            <h2>Model Performance</h2>
+          </div>
+          <div id="performanceGrid" class="perf-grid">Loading...</div>
+        </section>
+
+        <!-- Training History -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon">📜</div>
+            <h2>Training History</h2>
+          </div>
+          <div id="historyList" class="timeline">Loading...</div>
+        </section>
+
+        <!-- Reinforcement Learning -->
+        <section class="card">
+          <div class="card-header">
+            <div class="card-icon">🤖</div>
+            <h2>Reinforcement Learning</h2>
+          </div>
+          <div class="metrics-row metrics-row-sm">
+            <div class="metric-box">
+              <div class="metric-label">Status</div>
+              <div id="rlStatus" class="metric-value metric-value-sm">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Closed Trades</div>
+              <div id="rlTrades" class="metric-value">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Min Required</div>
+              <div id="rlMinTrades" class="metric-value">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Last RL Training</div>
+              <div id="rlLastTraining" class="metric-value metric-value-sm">—</div>
             </div>
           </div>
+          <div class="card-actions">
+            <label class="toggle-label">
+              <input type="checkbox" id="rlEnabled" onchange="toggleRL()" checked>
+              <span>Enabled</span>
+            </label>
+            <label class="inline-input-label">
+              <span>Min Trades:</span>
+              <input type="number" id="rlMinTradesInput" min="5" max="100" value="20" class="number-input">
+            </label>
+            <button class="btn btn-secondary" onclick="saveRLConfig()">Save</button>
+            <button class="btn btn-secondary" onclick="triggerRL()">Trigger</button>
+            <button class="btn btn-secondary" onclick="triggerRL(true)">Force</button>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
+    <!-- Full-width bottom sections -->
+
+    <!-- Backtesting & Simulation -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-icon">🎯</div>
+        <h2>Backtesting & Simulation</h2>
+      </div>
+      <div class="metrics-row">
+        <div class="metric-box">
+          <div class="metric-label">Status</div>
+          <div id="simStatus" class="metric-value metric-value-sm">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Progress</div>
+          <div id="simProgress" class="metric-value">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Last Return</div>
+          <div id="simLastReturn" class="metric-value accent-green">—</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-label">Sharpe Ratio</div>
+          <div id="simSharpe" class="metric-value accent-blue">—</div>
         </div>
       </div>
-      <div class="grid">
-        <div>
-          <div class="label">Available Profiles</div>
-          <div class="value" style="font-size: 14px;">🛡️ Sicher | ⚖️ Ausgewogen | 🚀 Riskant</div>
-        </div>
-        <div>
-          <div class="label">Risk Levels</div>
-          <div class="value" style="font-size: 14px;">1-10 (Client-selectable)</div>
+      <div id="simResultsPanel" style="display:none;" class="sim-results">
+        <h4>Last Simulation Results</h4>
+        <div class="metrics-row metrics-row-sm">
+          <div class="metric-box"><div class="metric-label">Total Return</div><div id="simTotalReturn" class="metric-value metric-value-sm">—</div></div>
+          <div class="metric-box"><div class="metric-label">Win Rate</div><div id="simWinRate" class="metric-value metric-value-sm">—</div></div>
+          <div class="metric-box"><div class="metric-label">Max Drawdown</div><div id="simMaxDrawdown" class="metric-value metric-value-sm">—</div></div>
+          <div class="metric-box"><div class="metric-label">Profit Factor</div><div id="simProfitFactor" class="metric-value metric-value-sm">—</div></div>
+          <div class="metric-box"><div class="metric-label">Total Trades</div><div id="simTotalTrades" class="metric-value metric-value-sm">—</div></div>
+          <div class="metric-box"><div class="metric-label">Avg Hold Time</div><div id="simAvgHold" class="metric-value metric-value-sm">—</div></div>
         </div>
       </div>
-      <div style="margin-top: 16px; padding: 12px; background: #0f1117; border-radius: 6px;">
-        <div style="font-size: 12px; color: #9ca3af;">
-          <strong>Profile-Details:</strong><br>
-          • <strong>Sicher (Level 1-3):</strong> 1-2% Position, 2% Stop-Loss, 4% Take-Profit, max 2 Trades<br>
-          • <strong>Ausgewogen (Level 4-6):</strong> 2-5% Position, 3% Stop-Loss, 6% Take-Profit, max 4 Trades<br>
-          • <strong>Riskant (Level 7-10):</strong> 5-10% Position, 5% Stop-Loss, 10% Take-Profit, max 6 Trades
+      <div class="card-actions">
+        <button class="btn btn-primary" onclick="runSimulation()">▶️ Run Simulation</button>
+        <button class="btn btn-secondary" onclick="compareProfiles()">📊 Compare Profiles</button>
+        <button class="btn btn-secondary" onclick="optimizeLevel()">🎯 Optimal Level</button>
+        <button class="btn btn-secondary" onclick="refreshSimStatus()">🔄 Refresh</button>
+      </div>
+    </section>
+
+    <!-- Risk Management -->
+    <section class="card">
+      <div class="card-header">
+        <div class="card-icon">⚖️</div>
+        <h2>Risk Management</h2>
+        <span class="info-badge">Client-Controlled</span>
+      </div>
+      <div class="info-banner">
+        <span class="info-banner-icon">🔒</span>
+        <div>
+          <strong>Risikoprofile werden vom Client gesteuert</strong>
+          <p>Jeder Client wählt sein eigenes Risikoprofil. Der Server kann diese Einstellungen nicht ändern.</p>
+        </div>
+      </div>
+      <div class="profile-details">
+        <div class="profile-detail-item">
+          <span class="profile-dot dot-green"></span>
+          <strong>Sicher (1–3):</strong> 1–2% Position, 2% SL, 4% TP, max 2 Trades
+        </div>
+        <div class="profile-detail-item">
+          <span class="profile-dot dot-blue"></span>
+          <strong>Ausgewogen (4–6):</strong> 2–5% Position, 3% SL, 6% TP, max 4 Trades
+        </div>
+        <div class="profile-detail-item">
+          <span class="profile-dot dot-red"></span>
+          <strong>Riskant (7–10):</strong> 5–10% Position, 5% SL, 10% TP, max 6 Trades
         </div>
       </div>
     </section>
 
+    <!-- Server Logs -->
     <section class="card">
-      <h2>📊 Backtesting & Simulation</h2>
-      <div class="grid">
-        <div>
-          <div class="label">Simulation Status</div>
-          <div id="simStatus" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Progress</div>
-          <div id="simProgress" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Last Result</div>
-          <div id="simLastReturn" class="value">—</div>
-        </div>
-        <div>
-          <div class="label">Sharpe Ratio</div>
-          <div id="simSharpe" class="value">—</div>
+      <div class="card-header">
+        <div class="card-icon">🪵</div>
+        <h2>Server Logs</h2>
+        <div class="card-header-actions">
+          <button class="btn btn-sm btn-secondary" onclick="downloadLogs()">Download</button>
+          <button class="btn btn-sm btn-secondary" onclick="refreshLogs(true)">Refresh</button>
         </div>
       </div>
-      <div id="simResultsPanel" style="display: none; margin-top: 16px; padding: 16px; background: #1a1a2e; border-radius: 8px;">
-        <h4 style="margin: 0 0 12px 0;">Last Simulation Results</h4>
-        <div class="grid">
-          <div><span class="label">Total Return</span><span id="simTotalReturn" class="value">—</span></div>
-          <div><span class="label">Win Rate</span><span id="simWinRate" class="value">—</span></div>
-          <div><span class="label">Max Drawdown</span><span id="simMaxDrawdown" class="value">—</span></div>
-          <div><span class="label">Profit Factor</span><span id="simProfitFactor" class="value">—</span></div>
-          <div><span class="label">Total Trades</span><span id="simTotalTrades" class="value">—</span></div>
-          <div><span class="label">Avg Hold Time</span><span id="simAvgHold" class="value">—</span></div>
-        </div>
-      </div>
-      <div class="sim-controls" style="margin-top: 16px;">
-        <div style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
-          <button onclick="runSimulation()">▶️ Run Simulation</button>
-          <button class="secondary" onclick="compareProfiles()">📊 Compare Profiles</button>
-          <button class="secondary" onclick="optimizeLevel()">🎯 Find Optimal Level</button>
-          <button class="secondary" onclick="refreshSimStatus()">🔄 Refresh</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Server Logs</h2>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-        <button onclick="downloadLogs()">Download Logs</button>
-        <button class="secondary" onclick="refreshLogs()">Refresh Logs</button>
-        <div style="margin-left:auto;font-size:0.9em;color:#666;">Shown = recent log lines</div>
-      </div>
-      <pre id="logBox" class="logs">Loading...</pre>
+      <pre id="logBox" class="log-box">Loading...</pre>
     </section>
   </main>
 
-  <script src="/static/app.js?v=20260203T1510"></script>
+  <footer>
+    <span>AI Trading Server · FastAPI + TensorFlow</span>
+  </footer>
+
+  <script src="/static/app.js?v=20260209"></script>
 </body>
 </html>
