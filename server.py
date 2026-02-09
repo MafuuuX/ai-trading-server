@@ -36,6 +36,7 @@ import pandas as pd
 
 from data_fetcher import CachedDataFetcher, TOP_STOCKS, get_live_prices
 from trainer import ModelTrainer
+from universal_trainer import UniversalModelTrainer, UNIVERSAL_MODEL_FILE, UNIVERSAL_SCALER_FILE
 from risk_profiles import (
     RiskProfile, RiskManager, PROFILES, CONSERVATIVE_PROFILE,
     BALANCED_PROFILE, AGGRESSIVE_PROFILE, interpolate_profile
@@ -68,10 +69,12 @@ app = FastAPI(
 )
 
 # CORS middleware for client connections
+# NOTE: allow_credentials=True is incompatible with allow_origins=["*"]
+# in newer Starlette versions and causes WebSocket 403 errors.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -261,9 +264,19 @@ class ServerState:
         self.error_log = []  # Recent errors for diagnostics
         self.max_error_log = 100
         
+        # Universal model state
+        self.universal_model_version = "v0"
+        self.universal_training_status = "idle"  # idle/training/completed/failed
+        self.universal_training_progress = 0.0
+        self.universal_training_message = ""
+        self.universal_training_start = None
+        self.universal_training_metrics = {}
+        self._load_universal_version()
+        
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
         self.trainer = ModelTrainer()
+        self.universal_trainer = UniversalModelTrainer(lookback=30, epochs=50)
         
         # Track startup time for uptime calculation
         self.startup_time = datetime.now()
@@ -422,10 +435,24 @@ class ServerState:
             with open(self.model_versions_file, 'w') as f:
                 json.dump({
                     'versions': self.active_models,
+                    'universal_version': self.universal_model_version,
                     'last_updated': datetime.now().isoformat()
                 }, f)
         except Exception as e:
             logger.warning(f"Could not save model versions: {e}")
+    
+    def _load_universal_version(self):
+        """Load universal model version from disk"""
+        try:
+            if self.model_versions_file.exists():
+                with open(self.model_versions_file, 'r') as f:
+                    data = json.load(f)
+                    self.universal_model_version = data.get('universal_version', 'v0')
+            # Check if model file exists
+            if Path(UNIVERSAL_MODEL_FILE).exists() and self.universal_model_version == 'v0':
+                self.universal_model_version = 'v1'
+        except Exception:
+            pass
     
     def _load_chart_cache(self):
         """Load cached chart data from disk"""
@@ -1653,13 +1680,30 @@ async def get_queue():
 
 @app.get("/api/models", response_model=List[ModelInfo])
 async def list_models():
-    """List all available models"""
+    """List all available models (per-ticker + universal)"""
     models = []
+    
+    # Universal model
+    universal_path = Path(UNIVERSAL_MODEL_FILE)
+    if universal_path.exists():
+        file_stat = universal_path.stat()
+        with open(universal_path, 'rb') as f:
+            file_hash = hashlib.md5(f.read()).hexdigest()
+        models.append({
+            "ticker": "UNIVERSAL",
+            "version": state.universal_model_version,
+            "trained_at": datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+            "file_hash": file_hash,
+            "file_size": file_stat.st_size
+        })
+    
+    # Per-ticker models
     for model_file in state.models_dir.glob("*_model.h5"):
         ticker = model_file.stem.replace("_model", "")
+        if ticker == "universal_market":
+            continue  # Already listed above
         file_stat = model_file.stat()
         
-        # Calculate file hash
         with open(model_file, 'rb') as f:
             file_hash = hashlib.md5(f.read()).hexdigest()
         
@@ -1936,7 +1980,7 @@ def process_training_queue():
 
 @app.post("/api/train-batch")
 async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTasks = None):
-    """Start training for multiple stocks"""
+    """Start training for multiple stocks (legacy per-ticker)"""
     if tickers is None:
         tickers = TOP_STOCKS[:10]  # Default first 10
     
@@ -1953,14 +1997,151 @@ async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTas
 
 @app.post("/api/train-all")
 async def train_all(background_tasks: BackgroundTasks):
-    """Queue training for all stocks"""
+    """Train the universal model (one model for all stocks)"""
+    if state.universal_training_status == "training":
+        raise HTTPException(status_code=409, detail="Universal training already in progress")
+    
+    state.universal_training_status = "training"
+    state.universal_training_progress = 0.0
+    state.universal_training_message = "Queued..."
+    background_tasks.add_task(train_universal_task)
+    return {"status": "universal training started", "tickers": len(TOP_STOCKS)}
+
+
+def train_universal_task():
+    """Background task: train one universal model across all tickers"""
+    try:
+        state.universal_training_start = datetime.now()
+        state.universal_training_status = "training"
+        logger.info(f"[Universal] Starting training with {len(TOP_STOCKS)} tickers...")
+        _ws_broadcast("training_update", status="started", mode="universal",
+                       message=f"Training universal model with {len(TOP_STOCKS)} tickers")
+
+        def on_progress(phase, pct, msg):
+            state.universal_training_progress = pct
+            state.universal_training_message = msg
+            _ws_broadcast("training_update", status="progress", mode="universal",
+                           progress=pct, phase=phase, message=msg)
+
+        result = state.universal_trainer.train(
+            fetcher=state.fetcher,
+            tickers=TOP_STOCKS,
+            progress_callback=on_progress,
+        )
+
+        if result:
+            # Increment version
+            try:
+                cur = int(str(state.universal_model_version).lstrip("v"))
+            except ValueError:
+                cur = 0
+            state.universal_model_version = f"v{cur + 1}"
+
+            state.universal_training_status = "completed"
+            state.universal_training_progress = 100.0
+            state.universal_training_message = "Training completed"
+            state.universal_training_metrics = result
+            state.save_model_versions()
+
+            duration = (datetime.now() - state.universal_training_start).total_seconds()
+            state.training_history.append({
+                "ticker": "UNIVERSAL",
+                "status": "completed",
+                "duration_seconds": duration,
+                "trained_at": datetime.now().isoformat(),
+                "class_accuracy": result.get("class_accuracy"),
+                "reg_mae": result.get("reg_mae"),
+                "tickers_used": result.get("tickers_used"),
+                "total_samples": result.get("total_samples"),
+            })
+            logger.info(f"[Universal] ✅ Training completed in {duration:.0f}s "
+                         f"(acc={result['class_accuracy']:.2%})")
+            _ws_broadcast("training_update", status="completed", mode="universal",
+                           metrics=result)
+        else:
+            state.universal_training_status = "failed"
+            state.universal_training_progress = 0.0
+            state.universal_training_message = "Training failed"
+            logger.error("[Universal] Training failed")
+            _ws_broadcast("training_update", status="failed", mode="universal")
+
+    except Exception as e:
+        import traceback
+        state.universal_training_status = "failed"
+        state.universal_training_message = f"Error: {str(e)}"
+        logger.error(f"[Universal] Training error: {e}")
+        logger.error(traceback.format_exc())
+        _ws_broadcast("training_update", status="failed", mode="universal",
+                       message=str(e))
+
+
+@app.get("/api/training-status/universal")
+async def universal_training_status():
+    """Get universal model training status"""
+    return {
+        "status": state.universal_training_status,
+        "progress": state.universal_training_progress,
+        "message": state.universal_training_message,
+        "version": state.universal_model_version,
+        "metrics": state.universal_training_metrics,
+        "model_exists": Path(UNIVERSAL_MODEL_FILE).exists(),
+    }
+
+
+@app.get("/api/models/universal/download")
+async def download_universal_model():
+    """Download the universal model + scaler as ZIP"""
+    import shutil
+
+    model_path = Path(UNIVERSAL_MODEL_FILE)
+    scaler_path = Path(UNIVERSAL_SCALER_FILE)
+
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Universal model not found")
+
+    temp_dir = Path("models/_universal_temp")
+    temp_dir.mkdir(exist_ok=True)
+    shutil.copy(model_path, temp_dir / "universal_market_model.h5")
+    if scaler_path.exists():
+        shutil.copy(scaler_path, temp_dir / "universal_scaler.pkl")
+
+    zip_path = Path("models/universal_model")
+    shutil.make_archive(str(zip_path), 'zip', str(temp_dir))
+    shutil.rmtree(temp_dir)
+
+    return FileResponse(
+        path=str(zip_path) + ".zip",
+        filename="universal_model.zip",
+        media_type="application/zip",
+    )
+
+
+@app.get("/api/models/universal/hash")
+async def universal_model_hash():
+    """Get hash of universal model for cache invalidation"""
+    model_path = Path(UNIVERSAL_MODEL_FILE)
+    if not model_path.exists():
+        raise HTTPException(status_code=404, detail="Universal model not found")
+
+    with open(model_path, 'rb') as f:
+        file_hash = hashlib.md5(f.read()).hexdigest()
+    return {
+        "hash": file_hash,
+        "version": state.universal_model_version,
+        "file_size": model_path.stat().st_size,
+    }
+
+
+@app.post("/api/train-all-legacy")
+async def train_all_legacy(background_tasks: BackgroundTasks):
+    """Legacy: Queue per-ticker training for all stocks"""
     for ticker in TOP_STOCKS:
         if state.training_status.get(ticker) not in ("training", "queued"):
             state.training_status[ticker] = "queued"
             if ticker not in state.training_queue:
                 state.training_queue.append(ticker)
     background_tasks.add_task(process_training_queue)
-    return {"status": "all queued", "count": len(TOP_STOCKS)}
+    return {"status": "all queued (legacy per-ticker)", "count": len(TOP_STOCKS)}
 
 
 @app.post("/api/train-sector/{sector}")
@@ -2042,20 +2223,14 @@ def collect_live_prices():
         logger.error(f"Error collecting live prices: {e}")
 
 def train_end_of_day():
-    """Train all models at end of day"""
-    logger.info(f"Starting end-of-day training for {len(TOP_STOCKS)} stocks...")
+    """Train universal model at end of day"""
+    logger.info("Starting end-of-day universal training...")
     
-    for ticker in TOP_STOCKS:  # Train all stocks
-        if state.training_status.get(ticker) not in ("training", "queued"):
-            state.training_status[ticker] = "queued"
-            if ticker not in state.training_queue:
-                state.training_queue.append(ticker)
-    
-    # Process queue in separate thread to avoid blocking scheduler
+    # Run universal training instead of per-ticker
     import threading
-    training_thread = threading.Thread(target=process_training_queue, daemon=False)
+    training_thread = threading.Thread(target=train_universal_task, daemon=False)
     training_thread.start()
-    logger.info(f"Training queue populated with {len(state.training_queue)} stocks")
+    logger.info("Universal training started in background")
 
 # ============================================================================
 # STARTUP & SHUTDOWN
