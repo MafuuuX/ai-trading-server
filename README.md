@@ -1,9 +1,9 @@
 # AI Trading Server
 
-Enterprise-grade distributed model training server for 135+ stocks with advanced technical analysis and dual-head LSTM architecture.
+Distributed model training server for 62 stocks with a **universal BiGRU model**, 18 ticker-agnostic technical features, self-attention, and dual-head (classification + regression) architecture.
 
-![Python](https://img.shields.io/badge/Python-3.12-blue)
-![TensorFlow](https://img.shields.io/badge/TensorFlow-2.20-orange)
+![Python](https://img.shields.io/badge/Python-3.10+-blue)
+![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-orange)
 ![FastAPI](https://img.shields.io/badge/FastAPI-Latest-green)
 ![License](https://img.shields.io/badge/License-MIT-blue)
 
@@ -13,30 +13,33 @@ Enterprise-grade distributed model training server for 135+ stocks with advanced
 
 - [Features](#features)
 - [Architecture](#architecture)
-- [Technical Indicators](#technical-indicators)
+- [Universal Model](#universal-model)
+- [Technical Indicators (18 Features)](#technical-indicators-18-features)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
 - [API Documentation](#api-documentation)
+- [Stock Coverage](#stock-coverage)
+- [Performance](#performance)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Features
 
-✅ **Dual-Head LSTM Model** - Simultaneous classification and regression predictions  
-✅ **7 Technical Indicators** - All implemented with pure pandas (no external dependencies)  
-✅ **Multi-Provider Price Fetching** - Alpaca (primary) → Finnhub → Yahoo (fallback)  
-✅ **Parallel Price Collection** - ThreadPoolExecutor with up to 20 workers for speed  
-✅ **Live Pricing** - Real-time market data with intelligent rate limiting  
-✅ **WebSocket Support** - Real-time server updates to connected clients  
-✅ **Google Drive Backup** - Automatic daily model backups (keeps last 7)  
-✅ **Intelligent Data Fallback** - Alpaca → YFinance seamless switching  
-✅ **Smart Caching** - 2-hour TTL with automatic validation  
-✅ **Zero-Downtime Training** - Background jobs don't block API  
-✅ **FastAPI REST Server** - Modern async Python web framework  
-✅ **Systemd Integration** - Production-ready service configuration  
-✅ **Comprehensive Logging** - Full tracebacks and performance metrics  
+✅ **Universal BiGRU Model** – One model trained across all 62 tickers simultaneously  
+✅ **18 Ticker-Agnostic Features** – All indicators normalised as percentages/ratios (no absolute prices)  
+✅ **Dual-Head Architecture** – Simultaneous 3-class classification (UP/NEUTRAL/DOWN) + regression  
+✅ **Self-Attention + Residual** – Attention-weighted context vector with skip connection  
+✅ **Class-Weight Balancing** – Automatic sample weighting to combat label imbalance  
+✅ **Multi-Provider Price Fetching** – Alpaca (primary) → Finnhub → Yahoo (fallback)  
+✅ **Parallel Price Collection** – ThreadPoolExecutor with up to 20 workers  
+✅ **WebSocket Support** – Real-time training progress & server events  
+✅ **Modern Dashboard** – Dark-themed web UI with live training progress  
+✅ **Google Drive Backup** – Automatic daily model backups (keeps last 7)  
+✅ **Smart Caching** – 2-hour TTL with automatic validation  
+✅ **Zero-Downtime Training** – Background jobs don't block API  
+✅ **Legacy Per-Ticker Models** – Fallback LSTM models still supported  
 
 ---
 
@@ -44,86 +47,114 @@ Enterprise-grade distributed model training server for 135+ stocks with advanced
 
 ### Core Components
 
-**Data Fetcher** (`data_fetcher.py`)
-- **Multi-Provider Strategy**: 
-  - Primary: Alpaca API (unlimited, fast, real-time)
-  - Backup: Finnhub (60 requests/minute, reliable)
-  - Fallback: Yahoo Finance (unlimited, slowest)
-- **Parallel Price Fetching**: ThreadPoolExecutor with up to 20 workers
-- **Rate Limiting**: Provider-specific configs (Alpaca: none, Finnhub: 1s, Yahoo: 0.5s)
-- **Retry Logic**: Exponential backoff for failed requests
-- Pandas-based dataframe validation
+| Component | File | Description |
+|-----------|------|-------------|
+| **Data Fetcher** | `data_fetcher.py` | Multi-provider price data (Alpaca → Finnhub → Yahoo) with rate limiting & caching |
+| **Universal Trainer** | `universal_trainer.py` | BiGRU(128)→BiGRU(64) + attention + residual, 18 features, 60-day lookback |
+| **Legacy Trainer** | `trainer.py` | Per-ticker dual-head LSTM (fallback) |
+| **API Server** | `server.py` | FastAPI with REST + WebSocket, JWT auth, model serving, dashboard |
+| **Dashboard** | `templates/dashboard.html` | Modern dark-themed UI with live training status |
+| **Risk Profiles** | `risk_profiles.py` | Per-user risk configuration |
+| **Simulator** | `simulator.py` | Backtesting engine |
 
-**Model Trainer** (`trainer.py`)
-- Dual-head LSTM: 7 technical indicators → [Classification, Regression] outputs
-- 60-day lookback window
-- MinMax scaling (0-1 normalization)
-- Early stopping with validation monitoring
-- 135+ stock ensemble training
+### Data Flow
 
-**FastAPI Server** (`server.py`)
-- Async request handling
-- **WebSocket Support** (`/ws` endpoint) - Real-time training updates
-- JWT-based authentication
-- Model download/sync endpoints
-- Training progress tracking with live streaming
-- HTML dashboard
-- Connection management for WebSocket clients
-
-**Google Drive Backup** (`backup_gdrive.py`)
-- Automated daily backups at 4:00 AM (via cron)
-- Uploads to "AI_Trading_Backups" folder in Google Drive
-- Keeps last 7 backups, auto-deletes older ones
-- Supports manual backup: `python backup_gdrive.py`
-- List backups: `python backup_gdrive.py --list`
-
-**Scheduler**
-- Automatic daily retraining (23:30 UTC)
-- Live price collection every 5 seconds
-- Cron-based execution
-- Error recovery with exponential backoff
+```
+Market Data (Alpaca/Finnhub/Yahoo)
+        │
+        ▼
+  CachedDataFetcher (2h TTL)
+        │
+        ▼
+  UniversalModelTrainer
+    ├── Feature Engineering (18 indicators)
+    ├── Z-score normalisation + clipping (±5σ)
+    ├── BiGRU(128) → BiGRU(64) + Attention
+    └── Dual Head: Classification (3-class) + Regression
+        │
+        ▼
+  Model Files (H5 + Scaler PKL)
+        │
+        ▼
+  FastAPI Server → Client Download / WebSocket Updates
+```
 
 ---
 
-## Technical Indicators
+## Universal Model
 
-All indicators implemented with **pandas only** - no external `ta` library dependency.
+The universal model replaces per-ticker training with a single model trained across all 62 stocks. This gives more training data, better generalisation, and eliminates the need to maintain hundreds of individual models.
 
-### 1. RSI (Relative Strength Index) - 14-period
-```
-Momentum oscillator measuring speed/magnitude of price changes
-Range: 0-100 (>70 overbought, <30 oversold)
-```
+### Architecture (v2)
 
-### 2. MACD (Moving Average Convergence Divergence)
 ```
-Trend-following momentum indicator
-EMA(12) - EMA(26) = trend signal
-```
-
-### 3. Bollinger Bands
-```
-Volatility bands around 20-day SMA
-Upper = SMA + 2×StdDev
-Lower = SMA - 2×StdDev
-```
-
-### 4. ATR (Average True Range) - 14-period
-```
-Volatility measure (price movement amplitude)
-Max(High-Low, |High-Close(prev)|, |Low-Close(prev)|)
-```
-
-### 5. SMA (Simple Moving Average)
-```
-20-day and 50-day trend indicators
+Input (60, 18)
+    │
+    ▼
+BiGRU(128, return_sequences=True) + LayerNorm
+    │
+    ▼
+BiGRU(64, return_sequences=True) + LayerNorm
+    │
+    ├──► Self-Attention → Context Vector (weighted sum)
+    ├──► Last Hidden State
+    │
+    ▼
+Concatenate([Context, LastHidden])  ← residual connection
+    │
+    ▼
+Dense(128, ReLU) + LayerNorm + Dropout(0.2)
+    │
+    ▼
+Dense(64, ReLU) + Dropout(0.15)
+    │
+    ├──► Classification Head (Dense 3, Softmax) → UP / NEUTRAL / DOWN
+    └──► Regression Head (Dense 1, Linear) → predicted % change
 ```
 
-### 6. Returns & Volatility
-```
-Daily returns: Close(t) / Close(t-1) - 1
-Rolling volatility: 20-day standard deviation
-```
+### Training Hyperparameters
+
+| Parameter | Value |
+|-----------|-------|
+| Lookback window | 60 days |
+| Epochs | 80 (EarlyStopping patience=15) |
+| Batch size | 64 |
+| Learning rate | 5×10⁻⁴ (ReduceLROnPlateau, factor=0.5, patience=7) |
+| Classification loss | SparseCategoricalCrossentropy |
+| Regression loss | Huber |
+| Loss weights | Classification: 1.0, Regression: 0.3 |
+| Label threshold | ±0.4% (UP/DOWN vs NEUTRAL boundary) |
+| Z-score clipping | ±5.0 |
+| Train/Val split | 85% / 15% |
+| Data shuffling | Cross-ticker random permutation |
+| Class balancing | Per-sample weights (auto-computed) |
+
+---
+
+## Technical Indicators (18 Features)
+
+All features are **ticker-agnostic** – expressed as percentages, ratios, or oscillator values. No absolute prices.
+
+| # | Feature | Description | Range |
+|---|---------|-------------|-------|
+| 1 | `Close_pct` | Close price % change | ~ ±5% |
+| 2 | `High_pct` | High price % change | ~ ±5% |
+| 3 | `Low_pct` | Low price % change | ~ ±5% |
+| 4 | `Volume_pct` | Volume % change | ~ ±100% |
+| 5 | `RSI` | Relative Strength Index (14-period) | 0–100 |
+| 6 | `MACD_norm` | MACD normalised by price (%) | ~ ±2% |
+| 7 | `BB_position` | Price position within Bollinger Bands | 0–100% |
+| 8 | `BB_width` | Bollinger Band width as % of price | ~ 2–15% |
+| 9 | `ATR_pct` | Average True Range as % of price | ~ 1–5% |
+| 10 | `SMA20_dist` | Distance from SMA(20) as % | ~ ±10% |
+| 11 | `SMA50_dist` | Distance from SMA(50) as % | ~ ±15% |
+| 12 | `Stoch_K` | Stochastic %K (14,3) | 0–100 |
+| 13 | `Stoch_D` | Stochastic %D (signal) | 0–100 |
+| 14 | `ROC_10` | Rate of Change (10-period) | ~ ±20% |
+| 15 | `Williams_R` | Williams %R (14-period) | -100–0 |
+| 16 | `CCI` | Commodity Channel Index (20-period) | ~ ±300 |
+| 17 | `OBV_pct` | On-Balance Volume % change (clipped ±50) | ±50% |
+| 18 | `Momentum` | 10-day price momentum (%) | ~ ±20% |
 
 ---
 
@@ -138,12 +169,8 @@ cd ai-trading-server
 ### 2. Create Virtual Environment
 ```bash
 python3 -m venv venv
-
-# Linux/macOS
-source venv/bin/activate
-
-# Windows
-venv\Scripts\activate
+source venv/bin/activate   # Linux/macOS
+# venv\Scripts\activate    # Windows
 ```
 
 ### 3. Install Dependencies
@@ -151,23 +178,21 @@ venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Required packages:
-- pandas ≥ 2.0.0 - Data manipulation
-- numpy ≥ 1.24.0 - Numerical computing
-- tensorflow ≥ 2.13.0 - Deep learning
-- scikit-learn ≥ 1.3.0 - Machine learning utilities
-- yfinance ≥ 0.2.28 - Market data
-- requests ≥ 2.31.0 - HTTP library
+Key dependencies:
+- `tensorflow` ≥ 2.13 – Deep learning
+- `ta` – Technical analysis indicators
+- `pandas` / `numpy` – Data processing
+- `scikit-learn` – ML utilities
+- `yfinance` – Market data (fallback)
+- `fastapi` / `uvicorn` – API server
+- `jinja2` – Dashboard templates
 
-### 4. (Optional) Install Systemd Service
+### 4. (Optional) Systemd Service
 ```bash
 sudo cp ai-trading-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable ai-trading-server
 sudo systemctl start ai-trading-server
-
-# Monitor logs
-sudo journalctl -u ai-trading-server -f
 ```
 
 ---
@@ -179,38 +204,23 @@ sudo journalctl -u ai-trading-server -f
 export ADMIN_USER="admin"
 export ADMIN_PASS="your_secure_password"
 export SESSION_SECRET="your_session_secret_key"
-export TRAINING_HOUR=23  # UTC hour for daily retraining
-export TRAINING_MINUTE=30
 
-# API Keys (optional - for multi-provider fallback)
+# API Keys (for multi-provider price fetching)
 export ALPACA_API_KEY_ID="your_alpaca_key"
 export ALPACA_SECRET_KEY="your_alpaca_secret"
 export ALPACA_BASE_URL="https://data.alpaca.markets"
 export FINNHUB_API_KEY="your_finnhub_key"
 ```
 
-Or use `api_keys.py` in parent directory (parent of ai-trading-server):
+Or create `api_keys.py` in the parent directory:
 ```python
 def load_api_keys():
     return {
         'alpaca': 'your_key',
         'alpaca_secret': 'your_secret',
         'alpaca_base_url': 'https://data.alpaca.markets',
-        'finnhub': 'your_key'
+        'finnhub': 'your_key',
     }
-```
-
-### server.py Settings
-```python
-TOP_STOCKS = [
-    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'META',   # Mega Cap
-    'NVDA', 'TSLA', 'AMD', 'NFLX', 'GOOG',    # Large Cap
-    # ... plus 125 more stocks
-]
-MODEL_DIR = './models'
-LOOKBACK = 60  # days
-BATCH_SIZE = 32
-EPOCHS = 50
 ```
 
 ---
@@ -220,261 +230,125 @@ EPOCHS = 50
 ### Start Server
 ```bash
 python server.py
+# or
+uvicorn server:app --host 0.0.0.0 --port 8000
 ```
-Server runs on `http://0.0.0.0:8000`
 
-### Access Web Dashboard
-```
-http://localhost:8000
-```
-- Login with ADMIN_USER / ADMIN_PASS
-- View training progress
-- Download models
-- Monitor performance metrics
+### Access Dashboard
+Open `http://localhost:8000` – login with ADMIN_USER / ADMIN_PASS.
 
-### Trigger Manual Training
+The dashboard shows:
+- **Universal Model** status card with live training progress bar
+- System stats (CPU, RAM, model count, queue)
+- Per-ticker model grid (collapsible)
+
+### Train Universal Model
 ```bash
 # Via API
-curl -X POST http://localhost:8000/api/train \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"stocks": ["AAPL", "MSFT", "GOOGL"]}'
+curl -X POST http://localhost:8000/api/train-all
 
-# Or via web dashboard
-# Click "Train Mega Cap" or "Train All 135"
+# Via dashboard – click "Train Universal Model"
+```
+
+### Train Legacy Per-Ticker Models
+```bash
+curl -X POST http://localhost:8000/api/train-all-legacy
 ```
 
 ---
 
 ## API Documentation
 
-### Health Check
-```
-GET /api/health
-Response: {"status": "operational", "timestamp": "2026-01-30T21:45:00"}
-```
+### Health & Info
 
-### Get Available Models
-```
-GET /api/models
-Response: [
-  {
-    "ticker": "AAPL",
-    "trained": "2026-01-30T15:30:00",
-    "classifier_file": "AAPL_classifier.keras",
-    "regressor_file": "AAPL_regressor.keras"
-  },
-  ...
-]
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/health` | Server health & uptime |
 
-### Download Model Bundle
-```
-GET /api/models/download
-Response: ZIP file containing all models + scalers
-```
+### Universal Model
 
-### Training Status
-```
-GET /api/training/status
-Response: {
-  "active_jobs": 3,
-  "queue_size": 12,
-  "current": "AAPL (Step 45/50)",
-  "progress": 0.90
-}
-```
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/train-all` | Start universal model training |
+| `GET` | `/api/training-status/universal` | Training progress (status, epoch, accuracy) |
+| `GET` | `/api/models/universal/download` | Download model + scaler as ZIP |
+| `GET` | `/api/models/universal/hash` | SHA256 hash for update detection |
+
+### Legacy Per-Ticker Models
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/train-all-legacy` | Queue all per-ticker training |
+| `POST` | `/api/train/{ticker}` | Train a single ticker |
+| `POST` | `/api/train-batch` | Train a batch of tickers |
+| `GET` | `/api/training-status` | Per-ticker training status |
+| `GET` | `/api/models/{ticker}/download` | Download ticker model ZIP |
+| `GET` | `/api/models/{ticker}/hash` | Ticker model hash |
+
+### Live Prices
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/prices/{ticker}` | Single stock live price |
+| `GET` | `/api/prices?tickers=AAPL,MSFT` | Multiple stock prices |
+| `GET` | `/api/chart-cache` | All cached live prices |
+
+### WebSocket
+
+| Endpoint | Description |
+|----------|-------------|
+| `WS /ws` | Real-time training progress, server status, price updates |
+
+### Trade Journal
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/trades` | Get trade journal |
+| `POST` | `/api/trades` | Log a trade |
+| `POST` | `/api/trades/close` | Close a trade |
+| `GET` | `/api/trades/analytics` | Trading analytics & win rates |
 
 ---
 
-## API Endpoints
-
-### Health & Info
-- `GET /api/health` - Server status
-- `GET /api/models` - List available models
-- `GET /api/training-status` - Training progress for all stocks
-- `GET /api/chart-cache` - Get cached live prices
-
-### Model Management
-- `GET /api/models/{ticker}/download` - Download model + scaler as ZIP
-- `GET /api/models/{ticker}/hash` - Get model file hash (for change detection)
-
-### Training
-- `POST /api/train/{ticker}` - Train specific stock
-- `POST /api/train-batch` - Train multiple stocks
-
-### Live Prices
-- `GET /api/prices/{ticker}` - Get single stock live price
-- `GET /api/prices?tickers=AAPL,MSFT,GOOGL` - Get multiple prices
-
-### WebSocket
-- `WS /ws` - Real-time connection for:
-  - Training progress updates
-  - Server status messages
-  - Price updates (if configured)
-  - Custom events from server
-
-### Trade Journal & Outcomes
-- `GET /api/trades` - Get trade journal entries
-- `POST /api/trades` - Log a new trade
-- `POST /api/trades/close` - Close an open trade with outcome
-- `GET /api/trades/analytics` - Get trading analytics and win rates
-- `GET /api/trade-outcomes` - Get trade outcomes for RL
-- `POST /api/trade-outcomes` - Record trade outcome for RL training
-
-### Reinforcement Learning
-- `GET /api/rl/config` - Get RL configuration and status
-- `POST /api/rl/config` - Update RL configuration
-- `POST /api/rl/trigger` - Manually trigger RL training
-- `POST /api/rl/trigger?force=true` - Force RL training regardless of conditions
-
-## Reinforcement Learning from Trade Outcomes
-
-The server supports **confidence-based reinforcement learning** that improves model predictions based on actual trade outcomes.
-
-### How It Works
-
-1. **Trade Reporting**: Client automatically reports trades when positions are opened/closed
-2. **Outcome Recording**: Each closed trade is recorded with:
-   - Entry/exit prices
-   - Realized P&L
-   - Model confidence at entry
-   - Holding duration
-3. **Weighted Sample Training**: 
-   - High confidence + WIN = Strong positive weight (model was right)
-   - High confidence + LOSS = Strong negative weight (penalize overconfidence)
-   - Low confidence + WIN = Moderate positive weight
-   - Low confidence + LOSS = Moderate negative weight
-
-### Configuration
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `enabled` | `true` | Enable/disable RL training |
-| `min_trades_required` | `20` | Minimum closed trades before RL activates |
-| `rl_training_interval_hours` | `24` | Hours between RL training runs |
-| `confidence_weight_factor` | `2.0` | Multiplier for confidence-based weighting |
-| `pnl_weight_cap` | `3.0` | Maximum sample weight multiplier |
-
-### Dashboard Controls
-
-The server dashboard includes an "🧠 Reinforcement Learning" section with:
-- Current RL status (Ready/Not Ready)
-- Number of closed trades
-- Minimum trades required
-- Last RL training timestamp
-- Enable/disable toggle
-- Min trades configuration
-- Manual trigger buttons
-
 ## Stock Coverage
 
-**135 stocks** across:
-- Mega Cap: AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA
-- Large Cap Tech: GOOG, AVGO, ORCL, INTC, AMD, NFLX, CRM, ADBE, etc.
-- Finance: JPM, BAC, WFC, GS, MS, BLK, SCHW, COIN, V, MA, etc.
-- Healthcare: UNH, JNJ, LLY, MRK, PFE, ABBV, TMO, AMGN, etc.
-- Energy: CVX, XOM, COP, MPC, PSX, VLO, HES, SLB, etc.
-- Consumer: MCD, SBUX, DKNG, NKE, LULU, ULTA, GPS, WMT, etc.
-- ETFs: SPY, QQQ, IWM, EEM, FXI, BABA, IGV, XLK, etc.
+**62 stocks** across 8 sectors + ETFs:
 
-## Training Schedule
+| Sector | Tickers |
+|--------|---------|
+| **Mega Cap Tech** | AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, GOOG, NFLX, AMD |
+| **Finance** | JPM, BAC, WFC, GS, MS, BLK, SCHW, COIN, V, MA, AXP |
+| **Healthcare** | UNH, JNJ, LLY, MRK, PFE, ABBV, TMO, AMGN |
+| **Energy** | CVX, XOM, COP, MPC, PSX, VLO, HES, SLB |
+| **Consumer** | MCD, SBUX, NKE, LULU, WMT, KO, PEP, HD |
+| **ETFs** | SPY, QQQ, IWM, EEM, XLK, XLV, XLF, XLE |
+| **Semiconductors & Enterprise** | AVGO, ORCL, INTC, CRM, ADBE, IBM, CSCO, QCOM, TXN |
 
-- **Mo-Fr 23:30 UTC**: Fetch new market data from yfinance
-- **Tu-Sa 01:00 UTC**: Start model training (~4-6 hours on i5-6400)
-- **After completion**: Automatically promote to production
-
-## Model Format
-
-- **Classification**: 3-class (DOWN/NEUTRAL/UP)
-- **Regression**: Percentage change prediction
-- **Lookback**: 30 days
-- **Features**: 7 technical indicators
-  - RSI (14-period)
-  - MACD
-  - Bollinger Bands (High & Low)
-  - ATR (Average True Range)
-  - SMA (20-day & 50-day)
-  - Returns & Volatility
-- **Architecture**: Dual-head LSTM (shared layers, separate classification & regression heads)
-
-## Client Integration
-
-### Check for Model Updates
-```python
-import requests
-import hashlib
-
-def check_model_update(ticker):
-    response = requests.get(f"http://server:8000/api/models/{ticker}/hash")
-    return response.json()['hash']
-
-def download_model(ticker):
-    response = requests.get(f"http://server:8000/api/models/{ticker}/download")
-    with open(f"{ticker}_model.zip", 'wb') as f:
-        f.write(response.content)
-```
+---
 
 ## Performance
 
-- **i5-6400 (4c/4t, 24GB RAM)**: ~4-6 hours for 135 stocks
-- **Memory per model**: ~50MB (model + scaler)
-- **Total model cache**: ~7GB for all 135 stocks
-- **API response time**: <100ms for model download
+| Metric | Value |
+|--------|-------|
+| **Hardware** | i5-6400 (4C/4T), 24 GB RAM |
+| **Universal training time** | ~30–60 min (62 tickers, 80 epochs) |
+| **Model file size** | ~5 MB (H5) + ~200 KB (scaler) |
+| **API response time** | < 100 ms |
+| **Price collection** | ~5s cycle (parallel, 20 workers) |
 
-## Monitoring
-
-Check server health:
-```bash
-curl http://192.168.2.96:8000/api/health
-```
-
-View training status:
-```bash
-curl http://192.168.2.96:8000/api/training-status
-```
-
-List available models:
-```bash
-curl http://192.168.2.96:8000/api/models
-```
-
-Get live prices:
-```bash
-curl "http://192.168.2.96:8000/api/prices?tickers=AAPL,MSFT,GOOGL"
-```
-
-View backups in Google Drive:
-```bash
-cd /path/to/ai-trading-server
-python backup_gdrive.py --list
-```
+---
 
 ## Troubleshooting
 
-**"Too Many Requests"**: Rate limiting on data providers
-- Solution: Data fetcher has multi-provider fallback and intelligent rate limiting
-- Alpaca: No limits (unlimited)
-- Finnhub: 1 second between requests (60/min limit)
-- Yahoo: 0.5 second between requests (fallback)
+| Problem | Solution |
+|---------|----------|
+| **"Too Many Requests"** | Multi-provider fallback handles this automatically. Check API keys are configured. |
+| **WebSocket 403** | Ensure `allow_credentials=False` in CORS config and `websockets` package installed. |
+| **No price data** | Check API keys in env vars or `api_keys.py`. Verify internet connection. |
+| **OOM during training** | Reduce batch size in `universal_trainer.py` or limit tickers. |
+| **GDrive backup failed** | Re-authorise: `python backup_gdrive.py --setup` |
 
-**"WebSocket connection refused"**: WebSocket endpoint not accessible
-- Solution: Ensure uvicorn is running and `websockets` library is installed: `pip install websockets>=16.0`
-
-**"No price data available"**: All providers failing
-- Solution: Check API keys in environment variables or `api_keys.py`
-- Verify internet connection and provider status
-- Check logs: `journalctl -u ai-trading-server -f`
-
-**OOM (Out of Memory)**: Training 135 stocks simultaneously
-- Solution: Reduce batch size in trainer.py or train in smaller batches
-
-**Training takes too long**: i5-6400 is baseline hardware
-- Solution: Upgrade CPU or train fewer stocks (~40-50 optimal for this CPU)
-
-**"Google Drive backup failed"**: OAuth token expired
-- Solution: Re-run setup: `python backup_gdrive.py --setup`
-- Or manually clear `token.json` and reauthorize
+---
 
 ## License
 
