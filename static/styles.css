@@ -801,6 +801,27 @@ main.center {
   background: var(--border-light);
 }
 
+/* ---- Collapsible Sections ---- */
+.card-header-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.card-header-toggle:hover {
+  opacity: 0.85;
+}
+.collapse-arrow {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  transition: transform 0.25s ease;
+}
+.collapse-arrow.open {
+  transform: rotate(90deg);
+}
+.collapsible {
+  overflow: hidden;
+}
+
 /* ---- Responsive ---- */
 @media (max-width: 1024px) {
   .two-col {

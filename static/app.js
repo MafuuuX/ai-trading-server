@@ -3,6 +3,15 @@
    ============================================= */
 
 // ---- Helpers ----
+function toggleSection(id) {
+  const el = document.getElementById(id);
+  const arrow = document.getElementById(id + 'Arrow');
+  if (!el) return;
+  const hidden = el.style.display === 'none';
+  el.style.display = hidden ? '' : 'none';
+  if (arrow) arrow.classList.toggle('open', hidden);
+}
+
 async function fetchJson(url, opts) {
   const res = await fetch(url, opts);
   if (!res.ok) throw new Error(`${res.status}`);

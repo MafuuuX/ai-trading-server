@@ -127,12 +127,14 @@
       <!-- Left Column -->
       <div class="col">
 
-        <!-- Per-Ticker Models Table -->
+        <!-- Per-Ticker Models Table (Collapsible) -->
         <section class="card">
-          <div class="card-header">
+          <div class="card-header card-header-toggle" onclick="toggleSection('tickerModels')">
             <div class="card-icon">📊</div>
             <h2>Per-Ticker Models <span class="legacy-tag">Legacy</span></h2>
+            <span id="tickerModelsArrow" class="collapse-arrow">▶</span>
           </div>
+          <div id="tickerModels" class="collapsible" style="display:none;">
           <div class="table-wrapper">
             <table>
               <thead>
@@ -154,6 +156,7 @@
             <select id="sectorSelect" class="select-input"></select>
             <button class="btn btn-secondary" onclick="trainSector()">Train Sector</button>
           </div>
+          </div><!-- end collapsible -->
         </section>
 
         <!-- Training Status -->
@@ -294,35 +297,7 @@
       </div>
     </section>
 
-    <!-- Risk Management -->
-    <section class="card">
-      <div class="card-header">
-        <div class="card-icon">⚖️</div>
-        <h2>Risk Management</h2>
-        <span class="info-badge">Client-Controlled</span>
-      </div>
-      <div class="info-banner">
-        <span class="info-banner-icon">🔒</span>
-        <div>
-          <strong>Risikoprofile werden vom Client gesteuert</strong>
-          <p>Jeder Client wählt sein eigenes Risikoprofil. Der Server kann diese Einstellungen nicht ändern.</p>
-        </div>
-      </div>
-      <div class="profile-details">
-        <div class="profile-detail-item">
-          <span class="profile-dot dot-green"></span>
-          <strong>Sicher (1–3):</strong> 1–2% Position, 2% SL, 4% TP, max 2 Trades
-        </div>
-        <div class="profile-detail-item">
-          <span class="profile-dot dot-blue"></span>
-          <strong>Ausgewogen (4–6):</strong> 2–5% Position, 3% SL, 6% TP, max 4 Trades
-        </div>
-        <div class="profile-detail-item">
-          <span class="profile-dot dot-red"></span>
-          <strong>Riskant (7–10):</strong> 5–10% Position, 5% SL, 10% TP, max 6 Trades
-        </div>
-      </div>
-    </section>
+
 
     <!-- Server Logs -->
     <section class="card">
