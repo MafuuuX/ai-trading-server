@@ -296,7 +296,7 @@ class UniversalModelTrainer:
         y_cls_combined = y_cls_combined[idx]
         y_reg_combined = y_reg_combined[idx]
 
-        # --- Class weights ---
+        # --- Class weights → sample weights (multi-output models don't support class_weight) ---
         cw = self._class_weights(y_cls_combined)
         logger.info(f"[Universal] Class weights: {cw}")
 
@@ -305,6 +305,10 @@ class UniversalModelTrainer:
         X_train, X_val       = X_combined[:split], X_combined[split:]
         y_cls_train, y_cls_val = y_cls_combined[:split], y_cls_combined[split:]
         y_reg_train, y_reg_val = y_reg_combined[:split], y_reg_combined[split:]
+
+        # Convert class weights to per-sample weights
+        sample_weights_cls = np.array([cw[int(c)] for c in y_cls_train])
+        sample_weights_reg = np.ones(len(y_reg_train))
 
         self.model = self.build_model(X_train.shape[1:])
 
@@ -327,7 +331,7 @@ class UniversalModelTrainer:
             ),
             epochs=self.epochs,
             batch_size=64,
-            class_weight=cw,
+            sample_weight={'classification': sample_weights_cls, 'regression': sample_weights_reg},
             shuffle=True,
             callbacks=[
                 keras.callbacks.EarlyStopping(
