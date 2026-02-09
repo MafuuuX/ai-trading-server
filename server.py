@@ -24,7 +24,7 @@ import secrets
 import hmac
 import psutil
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form, Path as FastapiPath
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form, Path as FastapiPath, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -469,6 +469,167 @@ state = ServerState()
 # Initialize risk manager and simulator after state
 risk_manager = RiskManager()
 simulator = create_simulator(state.fetcher)
+
+
+# ============================================================================
+# WEBSOCKET SUPPORT
+# ============================================================================
+
+class ConnectionManager:
+    """Manages WebSocket connections for real-time updates"""
+    
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket client connected. Total: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        logger.info(f"WebSocket client disconnected. Total: {len(self.active_connections)}")
+    
+    async def broadcast(self, message: dict):
+        """Send message to all connected clients"""
+        if not self.active_connections:
+            return
+        disconnected = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                disconnected.append(connection)
+        for conn in disconnected:
+            self.disconnect(conn)
+    
+    async def send_personal(self, websocket: WebSocket, message: dict):
+        """Send message to a specific client"""
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            self.disconnect(websocket)
+
+
+ws_manager = ConnectionManager()
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Main WebSocket endpoint for real-time client updates"""
+    await ws_manager.connect(websocket)
+    
+    try:
+        # Send initial connection confirmation
+        await websocket.send_json({
+            "type": "connected",
+            "message": "Connected to AI Trading Server",
+            "timestamp": datetime.now().isoformat()
+        })
+        
+        # Send current prices if available
+        if state.live_prices_cache:
+            prices = {}
+            for ticker, points in state.live_prices_cache.items():
+                if points:
+                    prices[ticker] = points[-1].get('price', 0)
+            if prices:
+                await websocket.send_json({
+                    "type": "prices",
+                    "prices": prices,
+                    "timestamp": datetime.now().isoformat()
+                })
+        
+        # Send current training status
+        if state.training_status:
+            await websocket.send_json({
+                "type": "training_status",
+                "data": state.training_status,
+                "timestamp": datetime.now().isoformat()
+            })
+        
+        # Keep connection alive and listen for client messages
+        while True:
+            try:
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+                action = data.get('action') or data.get('type', '')
+                
+                if action == 'ping':
+                    await websocket.send_json({"type": "pong"})
+                
+                elif action == 'subscribe':
+                    # Acknowledge subscription
+                    channel = data.get('channel', 'all')
+                    await websocket.send_json({
+                        "type": "subscribed",
+                        "channel": channel
+                    })
+                
+                elif action == 'get_prices':
+                    prices = {}
+                    for ticker, points in state.live_prices_cache.items():
+                        if points:
+                            prices[ticker] = points[-1].get('price', 0)
+                    await websocket.send_json({
+                        "type": "prices",
+                        "prices": prices,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    
+            except asyncio.TimeoutError:
+                # Send heartbeat to keep connection alive
+                try:
+                    await websocket.send_json({"type": "heartbeat"})
+                except Exception:
+                    break
+                    
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        ws_manager.disconnect(websocket)
+
+
+async def broadcast_training_update(ticker: str, status: str, progress: float = 0, metrics: dict = None):
+    """Broadcast training update to all WebSocket clients"""
+    message = {
+        "type": "training_update",
+        "ticker": ticker,
+        "status": status,
+        "progress": progress,
+        "timestamp": datetime.now().isoformat()
+    }
+    if metrics:
+        message["metrics"] = metrics
+    await ws_manager.broadcast(message)
+
+
+async def broadcast_prices(prices: dict):
+    """Broadcast live prices to all WebSocket clients"""
+    await ws_manager.broadcast({
+        "type": "prices",
+        "prices": prices,
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+def _ws_broadcast(msg_type: str, **kwargs):
+    """Helper to broadcast WebSocket messages from sync code (background tasks).
+    Safely schedules the coroutine on the running event loop."""
+    if not ws_manager.active_connections:
+        return
+    message = {"type": msg_type, "timestamp": datetime.now().isoformat()}
+    message.update(kwargs)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.run_coroutine_threadsafe(ws_manager.broadcast(message), loop)
+        else:
+            loop.run_until_complete(ws_manager.broadcast(message))
+    except RuntimeError:
+        # No event loop available (shouldn't happen with uvicorn)
+        pass
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -1655,6 +1816,9 @@ def train_stock_task(ticker: str):
         state.training_start[ticker] = datetime.now()
         state.training_progress[ticker] = 0.0
         
+        # Broadcast training started via WebSocket
+        _ws_broadcast("training_update", ticker=ticker, status="started")
+        
         # Fetch data
         df = state.fetcher.fetch_historical_data(ticker)
         if df is None:
@@ -1675,6 +1839,7 @@ def train_stock_task(ticker: str):
         # Progress callback
         def on_progress(epoch, total):
             state.training_progress[ticker] = round((epoch / total) * 100, 1)
+            _ws_broadcast("training_update", ticker=ticker, status="progress", progress=state.training_progress[ticker])
 
         # Train model with timeout safety
         try:
@@ -1713,6 +1878,10 @@ def train_stock_task(ticker: str):
                 "reg_mae": result.get("reg_mae")
             })
             logger.info(f"✅ Completed training for {ticker} in {duration:.0f}s")
+            
+            # Broadcast completion via WebSocket
+            _ws_broadcast("training_update", ticker=ticker, status="completed", 
+                         metrics=state.training_metrics.get(ticker, {}))
         else:
             state.training_status[ticker] = "failed"
             state.training_progress[ticker] = 0.0
@@ -1724,6 +1893,7 @@ def train_stock_task(ticker: str):
                 "trained_at": datetime.now().isoformat()
             })
             logger.error(f"Training failed for {ticker}")
+            _ws_broadcast("training_update", ticker=ticker, status="failed")
             
     except Exception as e:
         import traceback

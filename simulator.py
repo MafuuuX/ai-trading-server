@@ -88,6 +88,9 @@ class TradingSimulator:
     Simulates trading strategies on historical data.
     Used for training mode before live trading.
     """
+
+    TRAILING_STOP_PCT = 0.02
+    MAX_HOLD_DAYS = 5
     
     def __init__(self, data_fetcher, model_predictor=None):
         self.data_fetcher = data_fetcher
@@ -196,23 +199,37 @@ class TradingSimulator:
                     pos = open_positions[ticker]
                     df = all_data[ticker]
                     current_price = float(df['Close'].iloc[day_idx])
+                    best_price = pos.get('best_price', current_price)
+                    if pos['is_long']:
+                        best_price = max(best_price, current_price)
+                    else:
+                        best_price = min(best_price, current_price)
+                    pos['best_price'] = best_price
+                    trailing_stop = (
+                        best_price * (1 - self.TRAILING_STOP_PCT)
+                        if pos['is_long'] else best_price * (1 + self.TRAILING_STOP_PCT)
+                    )
                     
                     # Check stop-loss and take-profit
                     exit_reason = None
                     if pos['is_long']:
                         if current_price <= pos['stop_loss']:
                             exit_reason = 'stop_loss'
+                        elif current_price <= trailing_stop:
+                            exit_reason = 'trailing_stop'
                         elif current_price >= pos['take_profit']:
                             exit_reason = 'take_profit'
                     else:
                         if current_price >= pos['stop_loss']:
                             exit_reason = 'stop_loss'
+                        elif current_price >= trailing_stop:
+                            exit_reason = 'trailing_stop'
                         elif current_price <= pos['take_profit']:
                             exit_reason = 'take_profit'
                     
                     # Check timeout (max 10 days)
                     days_held = day_idx - pos['entry_day']
-                    if days_held >= 10 and not exit_reason:
+                    if days_held >= self.MAX_HOLD_DAYS and not exit_reason:
                         exit_reason = 'timeout'
                     
                     if exit_reason:
@@ -329,6 +346,7 @@ class TradingSimulator:
                                 'is_long': is_long,
                                 'stop_loss': stop_loss,
                                 'take_profit': take_profit,
+                                'best_price': current_price,
                                 'confidence': confidence,
                                 'expected_change': expected_change
                             }

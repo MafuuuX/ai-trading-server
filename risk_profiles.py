@@ -122,10 +122,33 @@ AGGRESSIVE_PROFILE = RiskProfile(
     icon="🔥"
 )
 
+EXTREME_PROFILE = RiskProfile(
+    name="Extreme",
+    level=10,
+    position_size_min=10.0,
+    position_size_max=25.0,
+    position_size_default=15.0,
+    stop_loss_tight=5.0,
+    stop_loss_default=8.0,
+    stop_loss_wide=15.0,
+    take_profit_min=10.0,
+    take_profit_default=25.0,
+    take_profit_max=50.0,
+    risk_reward_ratio=3.5,
+    max_concurrent_trades=15,
+    long_entry_threshold=0.2,
+    short_entry_threshold=-0.2,
+    min_confidence=0.45,
+    description="Hochaggressiv: Maximale Positionen, Scalping, Momentum-Trading",
+    color="#a855f7",  # Purple
+    icon="⚡"
+)
+
 PROFILES: Dict[str, RiskProfile] = {
     "conservative": CONSERVATIVE_PROFILE,
     "balanced": BALANCED_PROFILE,
     "aggressive": AGGRESSIVE_PROFILE,
+    "extreme": EXTREME_PROFILE,
 }
 
 

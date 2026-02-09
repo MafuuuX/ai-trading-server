@@ -172,9 +172,9 @@ class ModelTrainer:
             # Only add sequence if target is valid
             X_seq.append(X_scaled[i:i+self.lookback])
             
-            if future_return < -0.01:
+            if future_return < -0.006:
                 label = 0  # DOWN
-            elif future_return > 0.01:
+            elif future_return > 0.006:
                 label = 2  # UP
             else:
                 label = 1  # NEUTRAL
@@ -202,13 +202,14 @@ class ModelTrainer:
         return X_train, y_class_train, y_reg_train, X_val, y_class_val, y_reg_val
     
     def _create_model(self, input_shape: tuple) -> Model:
-        """Create dual-head LSTM model"""
+        """Create dual-head GRU model"""
         inputs = Input(shape=input_shape)
         
-        # Shared LSTM layers
-        x = layers.LSTM(64, return_sequences=True)(inputs)
+        # Shared GRU layers (faster, less overfit for intraday)
+        x = layers.GRU(64, return_sequences=True)(inputs)
+        x = layers.LayerNormalization()(x)
         x = layers.Dropout(0.2)(x)
-        x = layers.LSTM(32, return_sequences=False)(x)
+        x = layers.GRU(32, return_sequences=False)(x)
         x = layers.Dropout(0.2)(x)
         
         # Classification head
