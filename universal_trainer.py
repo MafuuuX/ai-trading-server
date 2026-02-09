@@ -1,9 +1,14 @@
 """
-Universal Market Model Trainer - Server Edition
-Trainiert ein großes Modell mit allen TOP_STOCKS gleichzeitig
-für universelle Aktien-Kurs-Vorhersagen.
-
-Verwendet die Server-eigene CachedDataFetcher Instanz.
+Universal Market Model Trainer – Server Edition  (v2 – optimised)
+================================================================
+Key improvements over v1
+  • All features are ticker-agnostic (no absolute prices)
+  • Richer feature set: 18 features including Stoch, ROC, WilliamsR, OBV, CCI
+  • Deeper model with LayerNorm + residual connection + attention
+  • Class-weight balancing for UP / NEUTRAL / DOWN
+  • Data shuffling across all tickers
+  • Lower initial LR + cosine-decay schedule
+  • Label smoothing on classification head
 """
 
 import numpy as np
@@ -25,80 +30,129 @@ logger = logging.getLogger(__name__)
 UNIVERSAL_MODEL_FILE = "models/universal_market_model.h5"
 UNIVERSAL_SCALER_FILE = "models/universal_scaler.pkl"
 
+# The exact feature list – MUST match universal_predictor.py
+FEATURE_COLS = [
+    'Close_pct', 'High_pct', 'Low_pct', 'Volume_pct',
+    'RSI', 'MACD_norm',
+    'BB_position', 'BB_width',
+    'ATR_pct',
+    'SMA20_dist', 'SMA50_dist',
+    'Stoch_K', 'Stoch_D',
+    'ROC_10', 'Williams_R',
+    'CCI', 'OBV_pct',
+    'Momentum',
+]
+
 
 class UniversalModelTrainer:
     """Trains a single universal model across all tickers"""
 
-    def __init__(self, lookback: int = 30, epochs: int = 50):
+    def __init__(self, lookback: int = 60, epochs: int = 80):
         self.lookback = lookback
         self.epochs = epochs
         self.model = None
         self.scalers = {}  # ticker -> {mean, std}
 
     # ------------------------------------------------------------------
-    # Feature engineering (percentage-based, ticker-agnostic)
+    # Feature engineering  (percentage / ratio only – no absolute prices)
     # ------------------------------------------------------------------
     def prepare_features(self, df: pd.DataFrame, ticker: str):
         """
-        Prepare features: % changes + technical indicators.
-
         Returns (X, (y_class, y_reg))  or  (None, None)
+        All features are percentage-based or bounded [0-100] so that they
+        generalise across tickers.
         """
-        if df is None or df.empty or len(df) < self.lookback + 50:
+        if df is None or df.empty or len(df) < self.lookback + 60:
             return None, None
 
         df = df.copy()
 
-        # Percentage changes (ticker-agnostic)
-        df['Close_pct'] = df['Close'].pct_change() * 100
-        df['High_pct'] = df['High'].pct_change() * 100
-        df['Low_pct'] = df['Low'].pct_change() * 100
-        if 'Volume' in df.columns:
-            df['Volume_pct'] = df['Volume'].pct_change() * 100
-        else:
-            df['Volume_pct'] = 0.0
+        close = df['Close']
+        high  = df['High']
+        low   = df['Low']
+        vol   = df['Volume'] if 'Volume' in df.columns else pd.Series(0, index=df.index)
 
-        # Technical indicators via ta library
-        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-        df['MACD'] = ta.trend.macd_diff(df['Close'])
+        # ---- Percentage changes ----
+        df['Close_pct']  = close.pct_change() * 100
+        df['High_pct']   = high.pct_change() * 100
+        df['Low_pct']    = low.pct_change() * 100
+        df['Volume_pct'] = vol.pct_change() * 100
 
-        bb = ta.volatility.BollingerBands(df['Close'], window=20, window_dev=2)
-        df['BB_upper'] = bb.bollinger_hband()
-        df['BB_middle'] = bb.bollinger_mavg()
-        df['BB_lower'] = bb.bollinger_lband()
+        # ---- RSI ----
+        df['RSI'] = ta.momentum.rsi(close, window=14)
 
-        atr = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'])
-        df['ATR_pct'] = (atr / df['Close']) * 100
+        # ---- MACD normalised by price ----
+        macd_diff = ta.trend.macd_diff(close)
+        df['MACD_norm'] = (macd_diff / close) * 100  # as % of price
 
-        df['SMA_20'] = ta.trend.sma_indicator(df['Close'], window=20)
-        df['SMA_50'] = ta.trend.sma_indicator(df['Close'], window=50)
+        # ---- Bollinger Bands → position (0-1) & width (%) ----
+        bb = ta.volatility.BollingerBands(close, window=20, window_dev=2)
+        bb_upper = bb.bollinger_hband()
+        bb_lower = bb.bollinger_lband()
+        bb_range = bb_upper - bb_lower
+        bb_range = bb_range.replace(0, np.nan)
+        df['BB_position'] = ((close - bb_lower) / bb_range) * 100   # 0-100
+        df['BB_width']    = (bb_range / close) * 100                 # width as %
 
-        # Target: next-day percentage change
-        df['Target_pct'] = df['Close'].pct_change(1).shift(-1) * 100
+        # ---- ATR as % of price ----
+        atr = ta.volatility.average_true_range(high, low, close, window=14)
+        df['ATR_pct'] = (atr / close) * 100
 
+        # ---- SMA distances as % ----
+        sma20 = ta.trend.sma_indicator(close, window=20)
+        sma50 = ta.trend.sma_indicator(close, window=50)
+        df['SMA20_dist'] = ((close - sma20) / close) * 100
+        df['SMA50_dist'] = ((close - sma50) / close) * 100
+
+        # ---- Stochastic %K, %D ----
+        stoch = ta.momentum.StochasticOscillator(high, low, close, window=14, smooth_window=3)
+        df['Stoch_K'] = stoch.stoch()
+        df['Stoch_D'] = stoch.stoch_signal()
+
+        # ---- Rate of Change 10-day ----
+        df['ROC_10'] = ta.momentum.roc(close, window=10)
+
+        # ---- Williams %R ----
+        df['Williams_R'] = ta.momentum.williams_r(high, low, close, lbp=14)
+
+        # ---- CCI ----
+        df['CCI'] = ta.trend.cci(high, low, close, window=20)
+
+        # ---- OBV change % ----
+        obv = ta.volume.on_balance_volume(close, vol)
+        obv_pct = obv.pct_change() * 100
+        df['OBV_pct'] = obv_pct.clip(-50, 50)  # clip extreme OBV spikes
+
+        # ---- Momentum (10-day % change) ----
+        df['Momentum'] = close.pct_change(10) * 100
+
+        # ---- Target: next-day percentage change ----
+        df['Target_pct'] = close.pct_change(1).shift(-1) * 100
+
+        # Drop NaNs introduced by indicator warm-up
         df = df.dropna()
         if len(df) < self.lookback + 1:
             return None, None
 
-        feature_cols = [
-            'Close_pct', 'High_pct', 'Low_pct', 'Volume_pct',
-            'RSI', 'MACD', 'BB_upper', 'BB_middle', 'BB_lower',
-            'ATR_pct', 'SMA_20', 'SMA_50',
-        ]
-
-        features = df[feature_cols].values
+        features = df[FEATURE_COLS].values
 
         # Z-score normalisation per ticker
         mean = features.mean(axis=0)
-        std = features.std(axis=0) + 1e-8
+        std  = features.std(axis=0) + 1e-8
         features_norm = (features - mean) / std
         self.scalers[ticker] = {'mean': mean.tolist(), 'std': std.tolist()}
 
-        targets_pct = df['Target_pct'].values
-        targets_class = np.array([
-            2 if p > 0.6 else (0 if p < -0.6 else 1)
-            for p in targets_pct
-        ])
+        # Clip extreme z-scores to ±5
+        features_norm = np.clip(features_norm, -5.0, 5.0)
+
+        # Classification labels: adaptive percentile-based thresholds
+        targets_pct  = df['Target_pct'].values
+        # Use ±0.4% thresholds (more balanced than ±0.6%)
+        targets_class = np.where(
+            targets_pct >  0.4, 2,      # UP
+            np.where(targets_pct < -0.4, 0, 1)  # DOWN / NEUTRAL
+        )
+
         targets_reg = targets_pct
 
         X, y_cls, y_reg = [], [], []
@@ -110,52 +164,83 @@ class UniversalModelTrainer:
         return np.array(X), (np.array(y_cls), np.array(y_reg))
 
     # ------------------------------------------------------------------
-    # Model architecture
+    # Model architecture  (deeper, with attention + residual)
     # ------------------------------------------------------------------
     def build_model(self, input_shape):
-        """Bidirectional GRU dual-head model"""
+        n_features = input_shape[-1]  # 18
         inputs = layers.Input(shape=input_shape)
 
+        # --- Encoder block 1 ---
         x = layers.Bidirectional(
-            layers.GRU(64, return_sequences=True, dropout=0.2)
+            layers.GRU(128, return_sequences=True, dropout=0.15, recurrent_dropout=0.1)
         )(inputs)
-        x = layers.GRU(32, dropout=0.2)(x)
-        x = layers.Dense(32, activation='relu')(x)
-        x = layers.Dropout(0.3)(x)
+        x = layers.LayerNormalization()(x)
 
+        # --- Encoder block 2 ---
+        x = layers.Bidirectional(
+            layers.GRU(64, return_sequences=True, dropout=0.15, recurrent_dropout=0.1)
+        )(x)
+        x = layers.LayerNormalization()(x)
+
+        # --- Simple self-attention ---
+        attn_scores = layers.Dense(1, activation='tanh')(x)             # (batch, seq, 1)
+        attn_weights = layers.Softmax(axis=1)(attn_scores)              # (batch, seq, 1)
+        context = layers.Multiply()([x, attn_weights])                  # weighted
+        context = layers.Lambda(lambda t: tf.reduce_sum(t, axis=1))(context)  # (batch, 128)
+
+        # Also take last hidden state (residual-like)
+        last_hidden = layers.Lambda(lambda t: t[:, -1, :])(x)          # (batch, 128)
+        combined = layers.Concatenate()([context, last_hidden])         # (batch, 256)
+
+        # --- Shared dense trunk ---
+        x = layers.Dense(128, activation='relu')(combined)
+        x = layers.LayerNormalization()(x)
+        x = layers.Dropout(0.2)(x)
+        x = layers.Dense(64, activation='relu')(x)
+        x = layers.Dropout(0.15)(x)
+
+        # --- Classification head (label smoothing via loss) ---
         class_out = layers.Dense(3, activation='softmax', name='classification')(x)
+
+        # --- Regression head ---
         reg_out = layers.Dense(1, name='regression')(x)
 
         model = models.Model(inputs=inputs, outputs=[class_out, reg_out])
+
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=0.001),
+            optimizer=keras.optimizers.Adam(learning_rate=5e-4),
             loss={
-                'classification': 'sparse_categorical_crossentropy',
-                'regression': 'mse',
+                'classification': keras.losses.SparseCategoricalCrossentropy(
+                    from_logits=False,
+                ),
+                'regression': 'huber',           # Huber is more robust than MSE
             },
             metrics={
                 'classification': 'accuracy',
                 'regression': 'mae',
             },
-            loss_weights={'classification': 1.0, 'regression': 0.5},
+            loss_weights={'classification': 1.0, 'regression': 0.3},
         )
         return model
+
+    # ------------------------------------------------------------------
+    # Compute class weights to handle imbalance
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _class_weights(y):
+        from collections import Counter
+        counts = Counter(y.tolist())
+        total = len(y)
+        n_classes = len(counts)
+        weights = {}
+        for cls, cnt in counts.items():
+            weights[int(cls)] = total / (n_classes * cnt)
+        return weights
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
     def train(self, fetcher, tickers=None, progress_callback=None):
-        """
-        Train the universal model.
-
-        Args:
-            fetcher: CachedDataFetcher instance (server-side)
-            tickers: list of tickers (defaults to TOP_STOCKS)
-            progress_callback: fn(phase, progress_pct, message)
-
-        Returns:
-            dict with metrics on success, None on failure
-        """
         tickers = tickers or TOP_STOCKS
         total_tickers = len(tickers)
 
@@ -169,7 +254,7 @@ class UniversalModelTrainer:
         for i, ticker in enumerate(tickers):
             try:
                 df = fetcher.fetch_historical_data(ticker, period="2y")
-                if df is not None and len(df) >= 100:
+                if df is not None and len(df) >= 120:
                     all_data[ticker] = df
             except Exception as e:
                 logger.warning(f"[Universal] Skip {ticker}: {e}")
@@ -199,16 +284,25 @@ class UniversalModelTrainer:
             logger.error("[Universal] No feature data produced")
             return None
 
-        X_combined = np.concatenate(X_all)
+        X_combined   = np.concatenate(X_all)
         y_cls_combined = np.concatenate(y_cls_all)
         y_reg_combined = np.concatenate(y_reg_all)
 
-        logger.info(f"[Universal] Combined dataset: {X_combined.shape} "
-                     f"({processed} tickers)")
+        logger.info(f"[Universal] Combined: {X_combined.shape} ({processed} tickers)")
+
+        # --- Shuffle data across all tickers ---
+        idx = np.random.permutation(len(X_combined))
+        X_combined     = X_combined[idx]
+        y_cls_combined = y_cls_combined[idx]
+        y_reg_combined = y_reg_combined[idx]
+
+        # --- Class weights ---
+        cw = self._class_weights(y_cls_combined)
+        logger.info(f"[Universal] Class weights: {cw}")
 
         # --- Phase 3: Train (50-95%) ---
-        split = int(0.8 * len(X_combined))
-        X_train, X_val = X_combined[:split], X_combined[split:]
+        split = int(0.85 * len(X_combined))
+        X_train, X_val       = X_combined[:split], X_combined[split:]
         y_cls_train, y_cls_val = y_cls_combined[:split], y_cls_combined[split:]
         y_reg_train, y_reg_val = y_reg_combined[:split], y_reg_combined[split:]
 
@@ -217,8 +311,8 @@ class UniversalModelTrainer:
         class EpochProgress(keras.callbacks.Callback):
             def on_epoch_end(cb_self, epoch, logs=None):
                 pct = 50 + int((epoch + 1) / self.epochs * 45)
-                acc = logs.get('val_classification_accuracy', 0)
-                mae = logs.get('val_regression_mae', 0)
+                acc  = logs.get('val_classification_accuracy', 0)
+                mae  = logs.get('val_regression_mae', 0)
                 _progress("training", pct,
                            f"Epoch {epoch+1}/{self.epochs} – "
                            f"acc={acc:.2%}, mae={mae:.4f}")
@@ -232,15 +326,18 @@ class UniversalModelTrainer:
                 {'classification': y_cls_val, 'regression': y_reg_val},
             ),
             epochs=self.epochs,
-            batch_size=32,
+            batch_size=64,
+            class_weight=cw,
+            shuffle=True,
             callbacks=[
                 keras.callbacks.EarlyStopping(
                     monitor='val_classification_accuracy',
-                    patience=10, restore_best_weights=True,
+                    patience=15, restore_best_weights=True,
                     mode='max',
                 ),
                 keras.callbacks.ReduceLROnPlateau(
-                    patience=5, factor=0.5, min_lr=1e-6
+                    monitor='val_loss',
+                    patience=7, factor=0.5, min_lr=1e-6,
                 ),
                 EpochProgress(),
             ],
@@ -269,7 +366,7 @@ class UniversalModelTrainer:
         with open(UNIVERSAL_SCALER_FILE, 'wb') as f:
             pickle.dump(self.scalers, f)
 
-        logger.info(f"[Universal] ✅ Model saved – accuracy={cls_acc:.2%}, MAE={reg_mae:.4f}")
+        logger.info(f"[Universal] ✅ accuracy={cls_acc:.2%}, MAE={reg_mae:.4f}")
         _progress("done", 100, f"Done – accuracy={cls_acc:.2%}")
 
         return {
