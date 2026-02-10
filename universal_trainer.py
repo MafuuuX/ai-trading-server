@@ -240,7 +240,10 @@ class UniversalModelTrainer:
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
-    def train(self, fetcher, tickers=None, progress_callback=None):
+    def train(self, fetcher, tickers=None, progress_callback=None, fresh=False):
+        """Train universal model.  If fresh=False (default) and a previous
+        model exists on disk, it will be loaded and fine-tuned (warm start)
+        with a lower learning rate.  Set fresh=True to train from scratch."""
         tickers = tickers or TOP_STOCKS
         total_tickers = len(tickers)
 
@@ -310,7 +313,32 @@ class UniversalModelTrainer:
         sample_weights_cls = np.array([cw[int(c)] for c in y_cls_train])
         sample_weights_reg = np.ones(len(y_reg_train))
 
-        self.model = self.build_model(X_train.shape[1:])
+        # --- Warm start: load previous model if available ---
+        warm_start = False
+        if not fresh and os.path.exists(UNIVERSAL_MODEL_FILE):
+            try:
+                self.model = keras.models.load_model(UNIVERSAL_MODEL_FILE, compile=False)
+                # Re-compile with a lower LR for fine-tuning
+                self.model.compile(
+                    optimizer=keras.optimizers.Adam(learning_rate=1e-4),
+                    loss={
+                        'classification': keras.losses.SparseCategoricalCrossentropy(),
+                        'regression': 'huber',
+                    },
+                    metrics={'classification': 'accuracy', 'regression': 'mae'},
+                    loss_weights={'classification': 1.0, 'regression': 0.3},
+                )
+                warm_start = True
+                logger.info("[Universal] ♻️  Warm start – fine-tuning existing model (LR=1e-4)")
+                _progress("training", 50, "Warm start – fine-tuning existing model...")
+            except Exception as e:
+                logger.warning(f"[Universal] Could not load previous model, training fresh: {e}")
+                self.model = None
+
+        if self.model is None:
+            self.model = self.build_model(X_train.shape[1:])
+            logger.info("[Universal] 🆕 Fresh training from scratch (LR=5e-4)")
+            _progress("training", 50, "Training new model from scratch...")
 
         class EpochProgress(keras.callbacks.Callback):
             def on_epoch_end(cb_self, epoch, logs=None):
@@ -370,8 +398,9 @@ class UniversalModelTrainer:
         with open(UNIVERSAL_SCALER_FILE, 'wb') as f:
             pickle.dump(self.scalers, f)
 
-        logger.info(f"[Universal] ✅ accuracy={cls_acc:.2%}, MAE={reg_mae:.4f}")
-        _progress("done", 100, f"Done – accuracy={cls_acc:.2%}")
+        mode_label = "fine-tuned" if warm_start else "fresh"
+        logger.info(f"[Universal] ✅ accuracy={cls_acc:.2%}, MAE={reg_mae:.4f} ({mode_label})")
+        _progress("done", 100, f"Done – accuracy={cls_acc:.2%} ({mode_label})")
 
         return {
             "class_accuracy": float(cls_acc),
@@ -379,5 +408,6 @@ class UniversalModelTrainer:
             "total_samples": int(len(X_combined)),
             "tickers_used": processed,
             "epochs_run": len(history.history.get('loss', [])),
+            "warm_start": warm_start,
             "trained_at": datetime.now().isoformat(),
         }
