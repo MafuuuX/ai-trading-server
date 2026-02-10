@@ -293,6 +293,30 @@ async def ui_login_middleware(request: Request, call_next):
             return RedirectResponse("/login")
     return await call_next(request)
 
+# ── Atomic JSON I/O (crash-safe) ──────────────────────────────────────────────
+def _atomic_json_write(filepath: Path, data, **kwargs) -> None:
+    """Write JSON atomically: write to temp file, then rename (POSIX-safe)."""
+    tmp = filepath.with_suffix('.tmp')
+    with open(tmp, 'w') as f:
+        json.dump(data, f, **kwargs)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(filepath)  # atomic on POSIX
+
+def _safe_json_load(filepath: Path, default=None):
+    """Load JSON, returning *default* on missing / empty / corrupt file."""
+    if default is None:
+        default = {}
+    try:
+        if not filepath.exists() or filepath.stat().st_size == 0:
+            return default
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning("Could not load %s: %s", filepath, e)
+        return default
+
+
 # Global state
 class ServerState:
     def __init__(self):
@@ -379,77 +403,54 @@ class ServerState:
     
     def _load_feature_stats(self):
         """Load feature statistics from disk"""
-        try:
-            if self.feature_stats_file.exists():
-                with open(self.feature_stats_file, 'r') as f:
-                    self.feature_stats = json.load(f)
-                    logger.info(f"Loaded feature stats for {len(self.feature_stats)} tickers")
-        except Exception as e:
-            logger.warning(f"Could not load feature stats: {e}")
-            self.feature_stats = {}
+        self.feature_stats = _safe_json_load(self.feature_stats_file, {})
+        if self.feature_stats:
+            logger.info(f"Loaded feature stats for {len(self.feature_stats)} tickers")
     
     def save_feature_stats(self):
-        """Save feature statistics to disk"""
+        """Save feature statistics to disk (atomic write)"""
         try:
-            with open(self.feature_stats_file, 'w') as f:
-                json.dump(self.feature_stats, f, indent=2)
+            _atomic_json_write(self.feature_stats_file, self.feature_stats, indent=2)
         except Exception as e:
             logger.error(f"Could not save feature stats: {e}")
     
     def _load_trade_journal(self):
         """Load trade journal from disk"""
-        try:
-            if self.trade_journal_file.exists():
-                with open(self.trade_journal_file, 'r') as f:
-                    self.trade_journal = json.load(f)
-                    logger.info(f"Loaded {len(self.trade_journal)} trade records")
-        except Exception as e:
-            logger.warning(f"Could not load trade journal: {e}")
-            self.trade_journal = []
+        self.trade_journal = _safe_json_load(self.trade_journal_file, [])
+        if self.trade_journal:
+            logger.info(f"Loaded {len(self.trade_journal)} trade records")
     
     def save_trade_journal(self):
-        """Save trade journal to disk"""
+        """Save trade journal to disk (atomic write)"""
         try:
-            with open(self.trade_journal_file, 'w') as f:
-                json.dump(self.trade_journal, f, indent=2)
+            _atomic_json_write(self.trade_journal_file, self.trade_journal, indent=2)
         except Exception as e:
             logger.error(f"Could not save trade journal: {e}")
     
     def _load_trade_outcomes(self):
         """Load trade outcomes for reinforcement learning"""
-        try:
-            if self.trade_outcomes_file.exists():
-                with open(self.trade_outcomes_file, 'r') as f:
-                    self.trade_outcomes = json.load(f)
-                    logger.info(f"Loaded {len(self.trade_outcomes)} trade outcomes for RL")
-        except Exception as e:
-            logger.warning(f"Could not load trade outcomes: {e}")
-            self.trade_outcomes = []
+        self.trade_outcomes = _safe_json_load(self.trade_outcomes_file, [])
+        if self.trade_outcomes:
+            logger.info(f"Loaded {len(self.trade_outcomes)} trade outcomes for RL")
     
     def save_trade_outcomes(self):
-        """Save trade outcomes to disk"""
+        """Save trade outcomes to disk (atomic write)"""
         try:
-            with open(self.trade_outcomes_file, 'w') as f:
-                json.dump(self.trade_outcomes, f, indent=2)
+            _atomic_json_write(self.trade_outcomes_file, self.trade_outcomes, indent=2)
         except Exception as e:
             logger.error(f"Could not save trade outcomes: {e}")
     
     def _load_rl_config(self):
         """Load reinforcement learning configuration"""
-        try:
-            if self.rl_config_file.exists():
-                with open(self.rl_config_file, 'r') as f:
-                    saved_config = json.load(f)
-                    self.rl_config.update(saved_config)
-                    logger.info(f"Loaded RL config: enabled={self.rl_config['enabled']}, min_trades={self.rl_config['min_trades_required']}")
-        except Exception as e:
-            logger.warning(f"Could not load RL config: {e}")
+        saved_config = _safe_json_load(self.rl_config_file, {})
+        if saved_config:
+            self.rl_config.update(saved_config)
+            logger.info(f"Loaded RL config: enabled={self.rl_config['enabled']}, min_trades={self.rl_config['min_trades_required']}")
     
     def save_rl_config(self):
-        """Save reinforcement learning configuration"""
+        """Save reinforcement learning configuration (atomic write)"""
         try:
-            with open(self.rl_config_file, 'w') as f:
-                json.dump(self.rl_config, f, indent=2)
+            _atomic_json_write(self.rl_config_file, self.rl_config, indent=2)
         except Exception as e:
             logger.error(f"Could not save RL config: {e}")
     
@@ -502,19 +503,18 @@ class ServerState:
 
     def _load_model_versions(self):
         """Load model versions from disk and backfill from existing models"""
-        try:
-            if self.model_versions_file.exists():
-                with open(self.model_versions_file, 'r') as f:
-                    data = json.load(f)
-                    self.active_models = data.get('versions', {})
-        except Exception as e:
-            logger.warning(f"Could not load model versions: {e}")
-            self.active_models = {}
+        data = _safe_json_load(self.model_versions_file, {})
+        self.active_models = data.get('versions', {})
 
-        # Backfill for existing model files
+        # Backfill for existing model files (any variant: AAPL_model, AAPL_deep_model, ...)
         try:
             for model_file in self.models_dir.glob("*_model.h5"):
                 ticker = model_file.stem.replace("_model", "")
+                # Strip ensemble suffixes to get base ticker
+                for suffix in ('_deep', '_fast', '_wide'):
+                    if ticker.endswith(suffix):
+                        ticker = ticker[:-len(suffix)]
+                        break
                 if ticker not in self.active_models:
                     self.active_models[ticker] = "v1"
         except Exception as e:
@@ -523,14 +523,13 @@ class ServerState:
         self.save_model_versions()
 
     def save_model_versions(self):
-        """Save model versions to disk"""
+        """Save model versions to disk (atomic write)"""
         try:
-            with open(self.model_versions_file, 'w') as f:
-                json.dump({
-                    'versions': self.active_models,
-                    'universal_version': self.universal_model_version,
-                    'last_updated': now().isoformat()
-                }, f)
+            _atomic_json_write(self.model_versions_file, {
+                'versions': self.active_models,
+                'universal_version': self.universal_model_version,
+                'last_updated': now().isoformat()
+            })
         except Exception as e:
             logger.warning(f"Could not save model versions: {e}")
     
@@ -549,24 +548,18 @@ class ServerState:
     
     def _load_chart_cache(self):
         """Load cached chart data from disk"""
-        try:
-            if self.chart_cache_file.exists():
-                with open(self.chart_cache_file, 'r') as f:
-                    data = json.load(f)
-                    self.live_prices_cache = data.get('live_prices', {})
-                    logger.info(f"Loaded chart cache with {len(self.live_prices_cache)} tickers")
-        except Exception as e:
-            logger.warning(f"Could not load chart cache: {e}")
-            self.live_prices_cache = {}
+        data = _safe_json_load(self.chart_cache_file, {})
+        self.live_prices_cache = data.get('live_prices', {})
+        if self.live_prices_cache:
+            logger.info(f"Loaded chart cache with {len(self.live_prices_cache)} tickers")
     
     def save_chart_cache(self):
-        """Save chart data cache to disk"""
+        """Save chart data cache to disk (atomic write)"""
         try:
-            with open(self.chart_cache_file, 'w') as f:
-                json.dump({
-                    'live_prices': self.live_prices_cache,
-                    'last_updated': now().isoformat()
-                }, f)
+            _atomic_json_write(self.chart_cache_file, {
+                'live_prices': self.live_prices_cache,
+                'last_updated': now().isoformat()
+            })
         except Exception as e:
             logger.warning(f"Could not save chart cache: {e}")
     
