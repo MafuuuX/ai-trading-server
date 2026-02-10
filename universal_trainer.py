@@ -129,15 +129,26 @@ class UniversalModelTrainer:
         df['Momentum'] = close.pct_change(10) * 100
 
         # ---- VIX market regime features ----
-        if vix_df is not None and not vix_df.empty:
-            # Align VIX to ticker's index
-            df['VIX_level'] = vix_df['Close'].reindex(df.index, method='ffill')
-            df['VIX_change'] = df['VIX_level'].pct_change() * 100
-            # Normalise VIX level: divide by 20 (long-term median ~20)
-            df['VIX_level'] = df['VIX_level'] / 20.0
-        else:
-            # Fallback: neutral values if VIX unavailable
-            df['VIX_level'] = 1.0    # 1.0 = VIX at ~20 (normal)
+        try:
+            if vix_df is not None and not vix_df.empty:
+                # Align VIX to ticker's index; handle length mismatches
+                vix_close = vix_df['Close']
+                if len(vix_close) >= len(df):
+                    # Use the last len(df) VIX values
+                    df['VIX_level'] = vix_close.iloc[-len(df):].values
+                else:
+                    # VIX shorter than ticker data: forward-fill from end
+                    aligned = vix_close.reindex(df.index, method='ffill')
+                    df['VIX_level'] = aligned.fillna(method='bfill').fillna(20.0)
+                df['VIX_change'] = df['VIX_level'].pct_change() * 100
+                df['VIX_level'] = df['VIX_level'] / 20.0
+            else:
+                # Fallback: neutral values if VIX unavailable
+                df['VIX_level'] = 1.0    # 1.0 = VIX at ~20 (normal)
+                df['VIX_change'] = 0.0
+        except Exception as e:
+            logger.warning(f"[Universal] VIX feature error for {ticker}: {e}")
+            df['VIX_level'] = 1.0
             df['VIX_change'] = 0.0
 
         # ---- Target: next-day percentage change ----
@@ -158,6 +169,11 @@ class UniversalModelTrainer:
 
         # Clip extreme z-scores to ±5
         features_norm = np.clip(features_norm, -5.0, 5.0)
+
+        # Sanity check: detect NaN/Inf in normalised features
+        if np.any(np.isnan(features_norm)) or np.any(np.isinf(features_norm)):
+            logger.warning(f"[Universal] NaN/Inf in normalised features for {ticker}, replacing")
+            features_norm = np.nan_to_num(features_norm, nan=0.0, posinf=5.0, neginf=-5.0)
 
         # Classification labels: adaptive percentile-based thresholds
         targets_pct  = df['Target_pct'].values
@@ -279,7 +295,8 @@ class UniversalModelTrainer:
                        f"Fetched {ticker} ({i+1}/{total_tickers})")
 
         if len(all_data) < 5:
-            logger.error(f"[Universal] Not enough data: only {len(all_data)} tickers")
+            logger.error(f"[Universal] Not enough data: only {len(all_data)} tickers (need >= 5)")
+            _progress("error", 0, f"Failed: only {len(all_data)} tickers loaded (need 5+)")
             return None
 
         # --- Fetch VIX data for market regime features ---
@@ -290,9 +307,20 @@ class UniversalModelTrainer:
                 vix_raw = vix_raw.reset_index()
                 if isinstance(vix_raw.columns, pd.MultiIndex):
                     vix_raw.columns = vix_raw.columns.droplevel(1)
-                vix_df = vix_raw[['Close']].copy()
-                vix_df.index = range(len(vix_df))
-                logger.info(f"[Universal] VIX data loaded: {len(vix_df)} days")
+                if 'Close' not in vix_raw.columns:
+                    logger.warning("[Universal] VIX data missing 'Close' column")
+                else:
+                    vix_df = vix_raw[['Close']].copy()
+                    vix_df.index = range(len(vix_df))
+                    # Validate VIX values are reasonable (5-100 range)
+                    vix_median = vix_df['Close'].median()
+                    if vix_median < 1 or vix_median > 200:
+                        logger.warning(f"[Universal] VIX median={vix_median:.1f} looks wrong, ignoring")
+                        vix_df = None
+                    else:
+                        logger.info(f"[Universal] VIX data loaded: {len(vix_df)} days, median={vix_median:.1f}")
+            else:
+                logger.warning("[Universal] VIX download returned empty data")
         except Exception as e:
             logger.warning(f"[Universal] VIX fetch failed (using fallback): {e}")
 
@@ -312,8 +340,12 @@ class UniversalModelTrainer:
                        f"Features for {ticker} ({processed}/{len(all_data)})")
 
         if not X_all:
-            logger.error("[Universal] No feature data produced")
+            logger.error("[Universal] No feature data produced from any ticker")
+            _progress("error", 30, "Failed: no features could be computed")
             return None
+
+        if len(X_all) < 3:
+            logger.warning(f"[Universal] Only {len(X_all)} tickers produced features (low diversity)")
 
         # --- CHRONOLOGICAL split per ticker (prevents temporal leakage) ---
         # Split each ticker's data 85/15 so validation is always the FUTURE
@@ -322,13 +354,24 @@ class UniversalModelTrainer:
         y_reg_train_all, y_reg_val_all = [], []
 
         for X_t, y_cls_t, y_reg_t in zip(X_all, y_cls_all, y_reg_all):
+            if len(X_t) < 10:
+                logger.warning(f"[Universal] Skipping ticker with only {len(X_t)} samples")
+                continue
             split_i = int(0.85 * len(X_t))
+            if split_i < 5 or len(X_t) - split_i < 2:
+                logger.warning(f"[Universal] Split too small ({split_i}/{len(X_t)}), skipping")
+                continue
             X_train_all.append(X_t[:split_i])
             X_val_all.append(X_t[split_i:])
             y_cls_train_all.append(y_cls_t[:split_i])
             y_cls_val_all.append(y_cls_t[split_i:])
             y_reg_train_all.append(y_reg_t[:split_i])
             y_reg_val_all.append(y_reg_t[split_i:])
+
+        if not X_train_all:
+            logger.error("[Universal] No ticker data survived chronological split")
+            _progress("error", 40, "Failed: all splits too small")
+            return None
 
         X_train = np.concatenate(X_train_all)
         X_val   = np.concatenate(X_val_all)
@@ -358,19 +401,29 @@ class UniversalModelTrainer:
         if not fresh and os.path.exists(UNIVERSAL_MODEL_FILE):
             try:
                 self.model = keras.models.load_model(UNIVERSAL_MODEL_FILE, compile=False)
-                # Re-compile with a lower LR for fine-tuning
-                self.model.compile(
-                    optimizer=keras.optimizers.Adam(learning_rate=1e-4),
-                    loss={
-                        'classification': keras.losses.SparseCategoricalCrossentropy(),
-                        'regression': 'huber',
-                    },
-                    metrics={'classification': 'accuracy', 'regression': 'mae'},
-                    loss_weights={'classification': 1.0, 'regression': 0.3},
-                )
-                warm_start = True
-                logger.info("[Universal] ♻️  Warm start – fine-tuning existing model (LR=1e-4)")
-                _progress("training", 50, "Warm start – fine-tuning existing model...")
+                # Validate feature dimensions match
+                expected_shape = (self.lookback, len(FEATURE_COLS))
+                model_input_shape = tuple(self.model.input_shape[1:])
+                if model_input_shape != expected_shape:
+                    logger.warning(
+                        f"[Universal] Model shape mismatch: model={model_input_shape}, "
+                        f"expected={expected_shape}. Training fresh instead."
+                    )
+                    self.model = None
+                else:
+                    # Re-compile with a lower LR for fine-tuning
+                    self.model.compile(
+                        optimizer=keras.optimizers.Adam(learning_rate=1e-4),
+                        loss={
+                            'classification': keras.losses.SparseCategoricalCrossentropy(),
+                            'regression': 'huber',
+                        },
+                        metrics={'classification': 'accuracy', 'regression': 'mae'},
+                        loss_weights={'classification': 1.0, 'regression': 0.3},
+                    )
+                    warm_start = True
+                    logger.info("[Universal] ♻️  Warm start – fine-tuning existing model (LR=1e-4)")
+                    _progress("training", 50, "Warm start – fine-tuning existing model...")
             except Exception as e:
                 logger.warning(f"[Universal] Could not load previous model, training fresh: {e}")
                 self.model = None
@@ -390,39 +443,49 @@ class UniversalModelTrainer:
                            f"acc={acc:.2%}, mae={mae:.4f}")
 
         _progress("training", 50, "Training model...")
-        history = self.model.fit(
-            X_train,
-            {'classification': y_cls_train, 'regression': y_reg_train},
-            validation_data=(
-                X_val,
-                {'classification': y_cls_val, 'regression': y_reg_val},
-            ),
-            epochs=self.epochs,
-            batch_size=64,
-            sample_weight={'classification': sample_weights_cls, 'regression': sample_weights_reg},
-            shuffle=True,
-            callbacks=[
-                keras.callbacks.EarlyStopping(
-                    monitor='val_classification_accuracy',
-                    patience=15, restore_best_weights=True,
-                    mode='max',
+        try:
+            history = self.model.fit(
+                X_train,
+                {'classification': y_cls_train, 'regression': y_reg_train},
+                validation_data=(
+                    X_val,
+                    {'classification': y_cls_val, 'regression': y_reg_val},
                 ),
-                keras.callbacks.ReduceLROnPlateau(
-                    monitor='val_loss',
-                    patience=7, factor=0.5, min_lr=1e-6,
-                ),
-                EpochProgress(),
-            ],
-            verbose=0,
-        )
+                epochs=self.epochs,
+                batch_size=64,
+                sample_weight={'classification': sample_weights_cls, 'regression': sample_weights_reg},
+                shuffle=True,
+                callbacks=[
+                    keras.callbacks.EarlyStopping(
+                        monitor='val_classification_accuracy',
+                        patience=15, restore_best_weights=True,
+                        mode='max',
+                    ),
+                    keras.callbacks.ReduceLROnPlateau(
+                        monitor='val_loss',
+                        patience=7, factor=0.5, min_lr=1e-6,
+                    ),
+                    EpochProgress(),
+                ],
+                verbose=0,
+            )
+        except Exception as e:
+            logger.error(f"[Universal] Training crashed: {e}")
+            _progress("error", 50, f"Training failed: {str(e)[:100]}")
+            return None
 
         # --- Phase 4: Evaluate & save (95-100%) ---
         _progress("saving", 95, "Evaluating & saving...")
-        loss, cls_loss, reg_loss, cls_acc, reg_mae = self.model.evaluate(
-            X_val,
-            {'classification': y_cls_val, 'regression': y_reg_val},
-            verbose=0,
-        )
+        try:
+            loss, cls_loss, reg_loss, cls_acc, reg_mae = self.model.evaluate(
+                X_val,
+                {'classification': y_cls_val, 'regression': y_reg_val},
+                verbose=0,
+            )
+        except Exception as e:
+            logger.error(f"[Universal] Evaluation failed: {e}")
+            cls_acc = 0.0
+            reg_mae = 999.0
 
         os.makedirs("models", exist_ok=True)
 
@@ -432,11 +495,19 @@ class UniversalModelTrainer:
             backup_dir = Path("models/backups/universal")
             backup_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_path.rename(backup_dir / f"universal_model_{ts}.h5")
+            try:
+                model_path.rename(backup_dir / f"universal_model_{ts}.h5")
+            except OSError as e:
+                logger.warning(f"[Universal] Could not backup old model: {e}")
 
-        self.model.save(UNIVERSAL_MODEL_FILE)
-        with open(UNIVERSAL_SCALER_FILE, 'wb') as f:
-            pickle.dump(self.scalers, f)
+        try:
+            self.model.save(UNIVERSAL_MODEL_FILE)
+            with open(UNIVERSAL_SCALER_FILE, 'wb') as f:
+                pickle.dump(self.scalers, f)
+        except Exception as e:
+            logger.error(f"[Universal] Could not save model: {e}")
+            _progress("error", 95, f"Model save failed: {e}")
+            return None
 
         mode_label = "fine-tuned" if warm_start else "fresh"
         logger.info(f"[Universal] ✅ accuracy={cls_acc:.2%}, MAE={reg_mae:.4f} ({mode_label})")

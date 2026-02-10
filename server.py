@@ -177,12 +177,26 @@ API_PUBLIC_ENDPOINTS = {"/api/health", "/api/heartbeat"}
 async def api_key_middleware(request: Request, call_next):
     """Require X-API-Key header for all /api/* endpoints (except public ones)."""
     path = request.url.path
-    if path.startswith("/api") and path not in API_PUBLIC_ENDPOINTS:
+    # Strip trailing slashes for consistent matching
+    clean_path = path.rstrip("/")
+    if clean_path.startswith("/api") and clean_path not in API_PUBLIC_ENDPOINTS:
         provided_key = request.headers.get("X-API-Key", "")
-        if not hmac.compare_digest(provided_key, API_KEY):
+        if not provided_key:
             return JSONResponse(
                 status_code=401,
-                content={"error": "Invalid or missing API key. Set X-API-Key header."},
+                content={"error": "Missing API key. Set X-API-Key header."},
+            )
+        try:
+            if not hmac.compare_digest(provided_key, API_KEY):
+                return JSONResponse(
+                    status_code=401,
+                    content={"error": "Invalid API key."},
+                )
+        except (TypeError, ValueError) as e:
+            logger.warning(f"API key comparison error: {e}")
+            return JSONResponse(
+                status_code=401,
+                content={"error": "API key validation failed."},
             )
     return await call_next(request)
 
