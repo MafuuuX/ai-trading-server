@@ -2,6 +2,24 @@
 
 Alle erwähnenswerten Änderungen an diesem Projekt werden in dieser Datei dokumentiert.
 
+## [2.1.0] - 2026-02-01
+
+### Added
+- ✅ **Ensemble Predictions** (`ensemble.py`) – Combine multiple model predictions with configurable strategies (weighted_average, majority_vote, confidence_weighted), adaptive weight learning from outcomes
+- ✅ **Model Versioning** (`model_registry.py`) – Automatic versioning of trained models with rollback support, hash-based integrity checks, configurable pruning (max versions per ticker)
+- ✅ **WebSocket Rate Limiting** (`rate_limiter.py`) – Token-bucket algorithm with per-IP connection limits, automatic banning after threshold violations, configurable burst/rate/ban duration
+- ✅ **Prometheus Metrics** (`metrics_collector.py`) – Pure-Python metrics collector (no external dependency) with Counter/Gauge/Histogram types, `/metrics` endpoint in Prometheus exposition format
+- ✅ **A/B Testing Framework** (`ab_testing.py`) – Full experiment lifecycle (create/pause/resume/complete/delete), traffic splitting, prediction & trade outcome tracking, statistical results
+- ✅ New API endpoints: `/metrics`, `/api/ensemble/*`, `/api/registry/*`, `/api/rate-limit/*`, `/api/ab/*`
+- ✅ Request middleware for HTTP metrics tracking (request count, latency by method/path/status)
+- ✅ WebSocket integration with rate limiting and Prometheus counters
+- ✅ Model registration with metrics tracking after training completion
+
+### Changed
+- `server.py`: Added imports and global instances for all 5 new modules
+- `server.py`: Train task now registers model versions and records Prometheus metrics on completion
+- `server.py`: WebSocket endpoint integrates rate limiting (check_connection, allow_message, cleanup)
+
 ## [2.0.0] - 2026-01-30
 
 ### Added

@@ -109,8 +109,8 @@ Please report bugs with:
 ## Areas for Contribution
 
 ### High Priority
+- ✅ ~~Model ensemble voting strategies (combine multiple predictions)~~ (Completed)
 - [ ] Backtesting framework with historical performance metrics
-- [ ] Model ensemble voting strategies (combine multiple predictions)
 - [ ] Additional technical indicators (Stochastic, Williams %R, OBV, etc.)
 - [ ] Support for cryptocurrency markets (Binance, Coinbase)
 - [ ] Performance optimizations (GPU training, caching improvements)
@@ -128,7 +128,7 @@ Please report bugs with:
 - [ ] Docker containerization
 - [ ] Kubernetes deployment configs
 - [ ] CI/CD pipeline (GitHub Actions)
-- [ ] Prometheus metrics endpoint
+- ✅ ~~Prometheus metrics endpoint~~ (Completed)
 - [ ] Grafana dashboard templates
 
 ### Documentation
