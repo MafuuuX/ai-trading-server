@@ -50,6 +50,11 @@ from risk_profiles import (
     BALANCED_PROFILE, AGGRESSIVE_PROFILE, interpolate_profile
 )
 from simulator import TradingSimulator, create_simulator
+from ensemble import EnsemblePredictor, ModelPrediction, EnsemblePrediction
+from model_registry import ModelRegistry
+from rate_limiter import RateLimiter
+from metrics_collector import metrics as prom_metrics
+from ab_testing import ABTestingManager
 
 # Sector mapping for Train Sector
 SECTORS = {
@@ -162,6 +167,26 @@ async def request_validation_middleware(request: Request, call_next):
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = f"{process_time:.3f}s"
         response.headers["X-Server-Time"] = now().isoformat()
+        
+        # S4: Record Prometheus metrics
+        try:
+            path = request.url.path
+            # Normalise parameterised paths for metric cardinality
+            if path.startswith("/api/models/") and "/download" in path:
+                path = "/api/models/{ticker}/download"
+            elif path.startswith("/api/models/") and "/hash" in path:
+                path = "/api/models/{ticker}/hash"
+            elif path.startswith("/api/chart-cache/"):
+                path = "/api/chart-cache/{ticker}"
+            prom_metrics.http_requests_total.inc(
+                method=request.method, path=path,
+                status=str(response.status_code),
+            )
+            prom_metrics.http_request_duration.observe(
+                process_time, method=request.method, path=path,
+            )
+        except Exception:
+            pass
         
         return response
     except Exception as e:
@@ -542,6 +567,28 @@ state = ServerState()
 risk_manager = RiskManager()
 simulator = create_simulator(state.fetcher)
 
+# S1: Ensemble predictor
+ensemble_predictor = EnsemblePredictor(strategy="weighted_average")
+
+# S2: Model registry (versioning & rollback)
+model_registry = ModelRegistry(
+    models_dir="./models",
+    registry_file="./data/model_registry.json",
+    max_versions_per_ticker=10,
+)
+
+# S3: WebSocket rate limiter
+ws_rate_limiter = RateLimiter(
+    rate=5.0,
+    burst=20,
+    max_connections_per_ip=5,
+    ban_threshold=50,
+    ban_duration_s=300.0,
+)
+
+# S5: A/B testing manager
+ab_manager = ABTestingManager(experiments_file="./data/ab_experiments.json")
+
 
 # ============================================================================
 # WEBSOCKET SUPPORT
@@ -590,7 +637,18 @@ ws_manager = ConnectionManager()
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """Main WebSocket endpoint for real-time client updates"""
+    # S3: Rate-limit connection
+    client_ip = websocket.client.host if websocket.client else "unknown"
+    ws_id = f"{client_ip}:{id(websocket)}"
+    allowed, reason = ws_rate_limiter.check_connection(client_ip, ws_id)
+    if not allowed:
+        await websocket.close(code=1008, reason=reason)
+        logger.warning("WebSocket connection rejected for %s: %s", client_ip, reason)
+        return
+
     await ws_manager.connect(websocket)
+    ws_rate_limiter.register_connection(client_ip, ws_id)
+    prom_metrics.ws_connections.inc()
     
     try:
         # Send initial connection confirmation
@@ -625,6 +683,17 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+
+                # S3: Rate-limit messages
+                msg_ok, msg_reason = ws_rate_limiter.allow_message(client_ip)
+                if not msg_ok:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Rate limited: {msg_reason}",
+                    })
+                    continue
+
+                prom_metrics.ws_messages_total.inc(direction="inbound")
                 action = data.get('action') or data.get('type', '')
                 
                 if action == 'ping':
@@ -657,10 +726,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     break
                     
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
+        pass
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+    finally:
         ws_manager.disconnect(websocket)
+        ws_rate_limiter.unregister_connection(client_ip, ws_id)
+        prom_metrics.ws_connections.dec()
 
 
 async def broadcast_training_update(ticker: str, status: str, progress: float = 0, metrics: dict = None):
@@ -1461,7 +1533,7 @@ async def get_risk_profiles():
 @app.get("/api/risk/current")
 async def get_current_risk_profile():
     """Get current risk profile settings"""
-    profile = risk_manager.get_current_profile()
+    profile = risk_manager.get_active_profile()
     return {
         "profile": {
             "name": profile.name,
@@ -1470,8 +1542,8 @@ async def get_current_risk_profile():
             "position_size_min": profile.position_size_min,
             "position_size_max": profile.position_size_max,
             "position_size_default": profile.position_size_default,
-            "stop_loss_min": profile.stop_loss_min,
-            "stop_loss_max": profile.stop_loss_max,
+            "stop_loss_tight": profile.stop_loss_tight,
+            "stop_loss_wide": profile.stop_loss_wide,
             "stop_loss_default": profile.stop_loss_default,
             "take_profit_min": profile.take_profit_min,
             "take_profit_max": profile.take_profit_max,
@@ -1481,15 +1553,14 @@ async def get_current_risk_profile():
             "min_confidence": profile.min_confidence,
             "long_entry_threshold": profile.long_entry_threshold,
             "short_entry_threshold": profile.short_entry_threshold,
-            "allow_shorts": profile.allow_shorts
         },
-        "overrides": risk_manager.get_overrides(),
+        "overrides": risk_manager.custom_overrides,
         "effective_settings": {
-            "position_size": risk_manager.get_effective_value("position_size_default"),
-            "stop_loss": risk_manager.get_effective_value("stop_loss_default"),
-            "take_profit": risk_manager.get_effective_value("take_profit_default"),
-            "max_concurrent_trades": risk_manager.get_effective_value("max_concurrent_trades"),
-            "min_confidence": risk_manager.get_effective_value("min_confidence")
+            "position_size": getattr(risk_manager.get_active_profile(), 'position_size_default', 0),
+            "stop_loss": getattr(risk_manager.get_active_profile(), 'stop_loss_default', 0),
+            "take_profit": getattr(risk_manager.get_active_profile(), 'take_profit_default', 0),
+            "max_concurrent_trades": getattr(risk_manager.get_active_profile(), 'max_concurrent_trades', 0),
+            "min_confidence": getattr(risk_manager.get_active_profile(), 'min_confidence', 0)
         }
     }
 
@@ -1508,13 +1579,16 @@ async def update_risk_profile(update: RiskProfileUpdate):
             logger.info(f"Risk profile changed to: {update.profile_name}")
         
         if update.risk_level is not None:
-            risk_manager.set_risk_level(update.risk_level)
+            risk_manager.set_custom_level(update.risk_level)
             logger.info(f"Risk level set to: {update.risk_level}")
         
         if update.overrides:
             for key, value in update.overrides.items():
                 if value is None:
-                    risk_manager.clear_override(key)
+                    # Clear single override by re-setting all others
+                    if key in risk_manager.custom_overrides:
+                        del risk_manager.custom_overrides[key]
+                        risk_manager.save_config()
                 else:
                     risk_manager.set_override(key, value)
             logger.info(f"Risk overrides updated: {update.overrides}")
@@ -1530,7 +1604,7 @@ async def update_risk_profile(update: RiskProfileUpdate):
 @app.delete("/api/risk/overrides")
 async def clear_risk_overrides():
     """Clear all risk parameter overrides"""
-    risk_manager.clear_all_overrides()
+    risk_manager.clear_overrides()
     logger.info("All risk overrides cleared")
     return {"status": "ok", "message": "All overrides cleared"}
 
@@ -1550,7 +1624,7 @@ async def calculate_risk_params(
     should_enter, reason = risk_manager.should_enter_trade(
         expected_change=expected_change,
         confidence=confidence,
-        current_trades=0,
+        current_open_trades=0,
         is_long=is_long
     )
     
@@ -1600,7 +1674,7 @@ async def run_simulation(request: SimulationRequest, background_tasks: Backgroun
                     detail=f"Invalid profile: {request.profile_name}. Valid: {list(PROFILES.keys())}"
                 )
         else:
-            profile = risk_manager.get_current_profile()
+            profile = risk_manager.get_active_profile()
         
         # Default tickers
         tickers = request.tickers or TOP_STOCKS[:20]
@@ -1968,6 +2042,20 @@ def train_stock_task(ticker: str):
             })
             logger.info(f"✅ Completed training for {ticker} in {duration:.0f}s")
             
+            # S2: Register in model registry
+            try:
+                model_registry.register(
+                    ticker=ticker,
+                    metrics=state.training_metrics.get(ticker, {}),
+                    training_duration_s=duration,
+                )
+            except Exception as reg_err:
+                logger.warning(f"Model registry failed for {ticker}: {reg_err}")
+            
+            # S4: Prometheus training metrics
+            prom_metrics.trainings_total.inc(ticker=ticker, status="completed")
+            prom_metrics.training_duration.observe(duration, ticker=ticker, model_type="per_ticker")
+            
             # Broadcast completion via WebSocket
             _ws_broadcast("training_update", ticker=ticker, status="completed", 
                          metrics=state.training_metrics.get(ticker, {}))
@@ -1982,6 +2070,7 @@ def train_stock_task(ticker: str):
                 "trained_at": now().isoformat()
             })
             logger.error(f"Training failed for {ticker}")
+            prom_metrics.trainings_total.inc(ticker=ticker, status="failed")
             _ws_broadcast("training_update", ticker=ticker, status="failed")
             
     except Exception as e:
@@ -2209,6 +2298,295 @@ def _average_training_duration() -> Optional[float]:
     if not durations:
         return None
     return sum(durations) / len(durations)
+
+
+# ============================================================================
+# S4: PROMETHEUS METRICS ENDPOINT
+# ============================================================================
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Expose metrics in Prometheus text exposition format."""
+    try:
+        uptime = (now() - state.startup_time).total_seconds()
+        prom_metrics.update_system_metrics(uptime)
+        prom_metrics.active_models.set(len(state.active_models))
+        prom_metrics.training_queue_depth.set(len(state.training_queue))
+    except Exception as e:
+        logger.warning(f"Metrics update error: {e}")
+
+    return Response(content=prom_metrics.render(), media_type="text/plain; version=0.0.4")
+
+
+# ============================================================================
+# S1: ENSEMBLE PREDICTION ENDPOINTS
+# ============================================================================
+
+class EnsembleConfigUpdate(BaseModel):
+    strategy: Optional[str] = None
+
+
+@app.get("/api/ensemble/config")
+async def get_ensemble_config():
+    """Get ensemble predictor configuration."""
+    return {
+        "strategy": ensemble_predictor.strategy,
+        "available_strategies": list(EnsemblePredictor.STRATEGIES),
+        "model_weights": ensemble_predictor.get_model_weights(),
+    }
+
+
+@app.post("/api/ensemble/config")
+async def update_ensemble_config(update: EnsembleConfigUpdate):
+    """Update ensemble predictor strategy."""
+    try:
+        if update.strategy:
+            ensemble_predictor.set_strategy(update.strategy)
+        return {"status": "ok", "strategy": ensemble_predictor.strategy}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/ensemble/predict/{ticker}")
+async def ensemble_predict(ticker: str):
+    """Run ensemble prediction for a ticker using all available models.
+
+    Collects predictions from per-ticker and universal models, then
+    aggregates them via the configured ensemble strategy.
+    """
+    ticker = ticker.upper()
+
+    predictions: List[ModelPrediction] = []
+    start_t = time.time()
+
+    # Per-ticker model prediction
+    model_path = state.models_dir / f"{ticker}_model.h5"
+    if model_path.exists():
+        try:
+            pred_start = time.time()
+            df = state.fetcher.fetch_historical_data(ticker)
+            if df is not None and len(df) >= 100:
+                result = state.trainer.train_and_validate(df, ticker, epochs=0)
+                if result:
+                    signal = "UP" if result.get("predicted_change", 0) > 0.5 else (
+                        "DOWN" if result.get("predicted_change", 0) < -0.5 else "NEUTRAL")
+                    predictions.append(ModelPrediction(
+                        model_id=f"{ticker}_per_ticker",
+                        model_type="per_ticker",
+                        signal=signal,
+                        confidence=result.get("class_accuracy", 0.5),
+                        predicted_change=result.get("predicted_change", 0),
+                        version=state.active_models.get(ticker, "v1"),
+                        latency_ms=(time.time() - pred_start) * 1000,
+                    ))
+        except Exception as e:
+            logger.warning(f"Per-ticker prediction failed for {ticker}: {e}")
+
+    # Universal model prediction (stub — real implementation would load and predict)
+    universal_path = Path(UNIVERSAL_MODEL_FILE)
+    if universal_path.exists():
+        try:
+            predictions.append(ModelPrediction(
+                model_id="universal",
+                model_type="universal",
+                signal="NEUTRAL",
+                confidence=0.5,
+                predicted_change=0.0,
+                version=state.universal_model_version,
+                latency_ms=0.0,
+            ))
+        except Exception as e:
+            logger.warning(f"Universal prediction failed for {ticker}: {e}")
+
+    # Run ensemble
+    result = ensemble_predictor.predict(ticker, predictions)
+    total_ms = (time.time() - start_t) * 1000
+
+    # S4: Track prediction metrics
+    prom_metrics.predictions_total.inc(ticker=ticker, signal=result.signal)
+    prom_metrics.prediction_latency.observe(total_ms / 1000, model_type="ensemble")
+    prom_metrics.ensemble_predictions_total.inc(strategy=ensemble_predictor.strategy)
+
+    return {
+        "ticker": result.ticker,
+        "signal": result.signal,
+        "confidence": result.confidence,
+        "predicted_change": result.predicted_change,
+        "agreement_ratio": result.agreement_ratio,
+        "strategy": result.strategy,
+        "model_count": result.model_count,
+        "individual_predictions": result.individual_predictions,
+        "latency_ms": round(total_ms, 2),
+    }
+
+
+@app.post("/api/ensemble/feedback")
+async def ensemble_feedback(
+    ticker: str,
+    actual_change: float,
+):
+    """Record actual market outcome for ensemble weight updates."""
+    try:
+        ensemble_predictor.record_outcome(ticker.upper(), actual_change, [])
+        return {"status": "ok", "message": "Weights updated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# S2: MODEL REGISTRY ENDPOINTS
+# ============================================================================
+
+@app.get("/api/registry/summary")
+async def registry_summary():
+    """Get model registry summary."""
+    return model_registry.get_summary()
+
+
+@app.get("/api/registry/{ticker}")
+async def registry_versions(ticker: str):
+    """List all versions for a ticker."""
+    ticker = ticker.upper()
+    versions = model_registry.get_all_versions(ticker)
+    return {
+        "ticker": ticker,
+        "versions": [v.to_dict() for v in versions],
+        "active": model_registry.get_active_version(ticker),
+        "count": len(versions),
+    }
+
+
+@app.post("/api/registry/{ticker}/rollback")
+async def registry_rollback(ticker: str, version: Optional[str] = None):
+    """Rollback a ticker to a specific version (or previous)."""
+    try:
+        mv = model_registry.rollback(ticker.upper(), version)
+        return {
+            "status": "rolled_back",
+            "ticker": mv.ticker,
+            "version": mv.version,
+            "file_hash": mv.file_hash,
+        }
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# S3: RATE LIMITER ENDPOINTS
+# ============================================================================
+
+@app.get("/api/rate-limit/stats")
+async def rate_limit_stats():
+    """Get WebSocket rate limiter statistics."""
+    return ws_rate_limiter.get_stats()
+
+
+@app.post("/api/rate-limit/reset/{client_id}")
+async def rate_limit_reset(client_id: str):
+    """Reset rate-limit state for a client (admin action)."""
+    ws_rate_limiter.reset_client(client_id)
+    return {"status": "ok", "client_id": client_id}
+
+
+# ============================================================================
+# S5: A/B TESTING ENDPOINTS
+# ============================================================================
+
+class ABExperimentCreate(BaseModel):
+    name: str
+    control_version: str
+    treatment_version: str
+    ticker: str = ""
+    description: str = ""
+    control_traffic_pct: float = 50.0
+    model_type: str = "per_ticker"
+
+
+@app.get("/api/ab/experiments")
+async def list_ab_experiments(status: Optional[str] = None):
+    """List all A/B experiments."""
+    return {"experiments": ab_manager.list_experiments(status)}
+
+
+@app.post("/api/ab/experiments")
+async def create_ab_experiment(data: ABExperimentCreate):
+    """Create a new A/B experiment."""
+    try:
+        exp = ab_manager.create_experiment(
+            name=data.name,
+            control_version=data.control_version,
+            treatment_version=data.treatment_version,
+            ticker=data.ticker,
+            description=data.description,
+            control_traffic_pct=data.control_traffic_pct,
+            model_type=data.model_type,
+        )
+        prom_metrics.ab_assignments_total.inc(experiment=exp.experiment_id, group="created")
+        return {"status": "created", "experiment": exp.to_dict()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ab/experiments/{experiment_id}")
+async def get_ab_results(experiment_id: str):
+    """Get results for an A/B experiment."""
+    results = ab_manager.get_results(experiment_id)
+    if not results:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return results
+
+
+@app.post("/api/ab/experiments/{experiment_id}/complete")
+async def complete_ab_experiment(experiment_id: str):
+    """Complete an A/B experiment and return results."""
+    results = ab_manager.complete_experiment(experiment_id)
+    if not results:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return results
+
+
+@app.post("/api/ab/experiments/{experiment_id}/pause")
+async def pause_ab_experiment(experiment_id: str):
+    """Pause an A/B experiment."""
+    if not ab_manager.pause_experiment(experiment_id):
+        raise HTTPException(status_code=404, detail="Experiment not found or not active")
+    return {"status": "paused"}
+
+
+@app.post("/api/ab/experiments/{experiment_id}/resume")
+async def resume_ab_experiment(experiment_id: str):
+    """Resume a paused A/B experiment."""
+    if not ab_manager.resume_experiment(experiment_id):
+        raise HTTPException(status_code=404, detail="Experiment not found or not paused")
+    return {"status": "resumed"}
+
+
+@app.delete("/api/ab/experiments/{experiment_id}")
+async def delete_ab_experiment(experiment_id: str):
+    """Delete an A/B experiment."""
+    if not ab_manager.delete_experiment(experiment_id):
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return {"status": "deleted"}
+
+
+@app.post("/api/ab/assign/{experiment_id}")
+async def assign_ab_group(experiment_id: str, client_id: str):
+    """Assign a client to an A/B group."""
+    try:
+        group_name, group = ab_manager.assign_group(experiment_id, client_id)
+        prom_metrics.ab_assignments_total.inc(experiment=experiment_id, group=group_name)
+        return {
+            "group": group_name,
+            "model_version": group.model_version,
+            "model_type": group.model_type,
+        }
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============================================================================
 # SCHEDULER SETUP
