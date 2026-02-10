@@ -6,7 +6,7 @@ Key improvements over v4
     volume ratio, ADX, realised volatility, daily range, 52w-high distance
   • More model capacity: Conv1D(64) → GRU(128) → Dense(128)
   • Label smoothing reduced 0.1 → 0.05 (less aggressive for binary)
-  • 10-year data instead of 5-year (>2× training samples)
+  • 5-year data (best balance of sample size vs relevance)
   • Patience 15 → 20, epochs 100 → 150
   • Binary classification (UP / DOWN) with percentile labeling
   • Train-only normalisation (no data leakage)
@@ -280,7 +280,7 @@ class UniversalModelTrainer:
         all_data = {}
         for i, ticker in enumerate(tickers):
             try:
-                df = fetcher.fetch_historical_data(ticker, period="10y")
+                df = fetcher.fetch_historical_data(ticker, period="5y")
                 if df is not None and len(df) >= 120:
                     all_data[ticker] = df
             except Exception as e:
@@ -296,7 +296,7 @@ class UniversalModelTrainer:
         # --- Fetch VIX data for market regime features ---
         vix_df = None
         try:
-            vix_raw = yf.download("^VIX", period="10y", progress=False)
+            vix_raw = yf.download("^VIX", period="5y", progress=False)
             if vix_raw is not None and not vix_raw.empty:
                 vix_raw = vix_raw.reset_index()
                 if isinstance(vix_raw.columns, pd.MultiIndex):

@@ -2146,24 +2146,25 @@ async def train_batch(tickers: List[str] = None, background_tasks: BackgroundTas
 
 
 @app.post("/api/train-all")
-async def train_all(background_tasks: BackgroundTasks):
-    """Train the universal model (one model for all stocks)"""
+async def train_all(background_tasks: BackgroundTasks, fresh: bool = False):
+    """Train the universal model (one model for all stocks).
+    Pass fresh=true to force training from scratch (ignores existing model)."""
     if state.universal_training_status == "training":
         raise HTTPException(status_code=409, detail="Universal training already in progress")
     
     state.universal_training_status = "training"
     state.universal_training_progress = 0.0
     state.universal_training_message = "Queued..."
-    background_tasks.add_task(train_universal_task)
-    return {"status": "universal training started", "tickers": len(TOP_STOCKS)}
+    background_tasks.add_task(train_universal_task, fresh=fresh)
+    return {"status": "universal training started", "tickers": len(TOP_STOCKS), "fresh": fresh}
 
 
-def train_universal_task():
+def train_universal_task(fresh: bool = False):
     """Background task: train one universal model across all tickers"""
     try:
         state.universal_training_start = now()
         state.universal_training_status = "training"
-        logger.info(f"[Universal] Starting training with {len(TOP_STOCKS)} tickers...")
+        logger.info(f"[Universal] Starting training with {len(TOP_STOCKS)} tickers (fresh={fresh})...")
         _ws_broadcast("training_update", status="started", mode="universal",
                        message=f"Training universal model with {len(TOP_STOCKS)} tickers")
 
@@ -2177,6 +2178,7 @@ def train_universal_task():
             fetcher=state.fetcher,
             tickers=TOP_STOCKS,
             progress_callback=on_progress,
+            fresh=fresh,
         )
 
         if result:
