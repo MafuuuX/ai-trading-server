@@ -393,7 +393,7 @@ class ServerState:
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
         self.trainer = ModelTrainer()
-        self.universal_trainer = UniversalModelTrainer(lookback=20, epochs=100)
+        self.universal_trainer = UniversalModelTrainer(lookback=20, epochs=150)
         
         # Track startup time for uptime calculation
         self.startup_time = now()
