@@ -1,13 +1,13 @@
 """
-Universal Market Model Trainer – Server Edition  (v4 – optimised binary)
+Universal Market Model Trainer – Server Edition  (v5 – enhanced features)
 =============================================================================
-Key improvements over v3
-  • 5-day prediction horizon (much better SNR than 1-day)
-  • Simplified architecture: Conv1D → single GRU → Dense (less overfitting)
-  • Removed redundant features (Stoch_D, Williams_R, CCI) → 17 features
-  • Removed regression head (conflicting gradients with classification)
-  • Label smoothing 0.1 (reduces overconfidence on noisy labels)
-  • Conv1D(32) feature extractor before GRU (local pattern detection)
+Key improvements over v4
+  • +7 new high-impact features (24 total): multi-timeframe returns,
+    volume ratio, ADX, realised volatility, daily range, 52w-high distance
+  • More model capacity: Conv1D(64) → GRU(128) → Dense(128)
+  • Label smoothing reduced 0.1 → 0.05 (less aggressive for binary)
+  • 10-year data instead of 5-year (>2× training samples)
+  • Patience 15 → 20, epochs 100 → 150
   • Binary classification (UP / DOWN) with percentile labeling
   • Train-only normalisation (no data leakage)
   • 70/15/15 chronological split, class-weight balancing
@@ -37,7 +37,7 @@ UNIVERSAL_SCALER_FILE = "models/universal_scaler.pkl"
 PREDICTION_HORIZON = 5
 
 # The exact feature list – MUST match universal_predictor.py & feature_engineering.py
-# v4: removed Stoch_D (redundant with Stoch_K), Williams_R (≈inverted RSI), CCI (≈RSI)
+# v5: 24 features (+7 new high-impact features over v4's 17)
 FEATURE_COLS = [
     'Close_pct', 'High_pct', 'Low_pct', 'Volume_pct',
     'RSI', 'MACD_norm',
@@ -49,13 +49,20 @@ FEATURE_COLS = [
     'OBV_pct',
     'Momentum',
     'VIX_level', 'VIX_change',
+    # v5 additions
+    'Return_5d', 'Return_20d',
+    'Volume_SMA_ratio',
+    'ADX',
+    'Volatility_20d',
+    'High_Low_pct',
+    'Dist_52w_high',
 ]
 
 
 class UniversalModelTrainer:
     """Trains a single universal model across all tickers (binary UP/DOWN classification)"""
 
-    def __init__(self, lookback: int = 20, epochs: int = 100):
+    def __init__(self, lookback: int = 20, epochs: int = 150):
         self.lookback = lookback
         self.epochs = epochs
         self.model = None
@@ -134,6 +141,29 @@ class UniversalModelTrainer:
         # ---- Momentum (10-day % change) ----
         df['Momentum'] = close.pct_change(10) * 100
 
+        # ---- v5: Multi-timeframe returns ----
+        df['Return_5d'] = close.pct_change(5) * 100
+        df['Return_20d'] = close.pct_change(20) * 100
+
+        # ---- v5: Volume relative to 20-day average ----
+        vol_sma20 = vol.rolling(20).mean()
+        vol_sma20 = vol_sma20.replace(0, np.nan)
+        df['Volume_SMA_ratio'] = (vol / vol_sma20).clip(0, 5)
+
+        # ---- v5: ADX (trend strength 0-100) ----
+        df['ADX'] = ta.trend.adx(high, low, close, window=14)
+
+        # ---- v5: 20-day realised volatility (annualised) ----
+        daily_returns = close.pct_change()
+        df['Volatility_20d'] = daily_returns.rolling(20).std() * np.sqrt(252) * 100
+
+        # ---- v5: Intraday range as % of close ----
+        df['High_Low_pct'] = ((high - low) / close) * 100
+
+        # ---- v5: Distance from 52-week (252-day) high ----
+        rolling_max = close.rolling(252, min_periods=20).max()
+        df['Dist_52w_high'] = ((close - rolling_max) / rolling_max) * 100
+
         # ---- VIX market regime features ----
         try:
             if vix_df is not None and not vix_df.empty:
@@ -187,23 +217,23 @@ class UniversalModelTrainer:
         return np.array(X), np.array(y_target)
 
     # ------------------------------------------------------------------
-    # Model architecture  (v4: Conv1D → GRU → Dense, classification only)
+    # Model architecture  (v5: Conv1D → GRU → Dense, more capacity)
     # ------------------------------------------------------------------
     def build_model(self, input_shape, learning_rate: float = 5e-4):
         inputs = layers.Input(shape=input_shape)
 
         # --- Conv1D feature extractor (local pattern detection) ---
-        x = layers.Conv1D(32, kernel_size=3, padding='causal', activation=None)(inputs)
+        x = layers.Conv1D(64, kernel_size=3, padding='causal', activation=None)(inputs)
         x = layers.BatchNormalization()(x)
         x = layers.Activation('relu')(x)
 
-        # --- Single GRU encoder (simpler = less overfitting on noisy data) ---
-        x = layers.GRU(64, dropout=0.2)(x)  # returns last hidden state only
+        # --- GRU encoder (more capacity for 24 features) ---
+        x = layers.GRU(128, dropout=0.2)(x)  # returns last hidden state only
         x = layers.LayerNormalization()(x)
 
         # --- Dense head ---
-        x = layers.Dense(64, activation='relu')(x)
-        x = layers.Dropout(0.25)(x)
+        x = layers.Dense(128, activation='relu')(x)
+        x = layers.Dropout(0.3)(x)
 
         # --- Classification output: Binary (UP=1 / DOWN=0) ---
         class_out = layers.Dense(2, activation='softmax', name='classification')(x)
@@ -212,7 +242,7 @@ class UniversalModelTrainer:
 
         model.compile(
             optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-            loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+            loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
             metrics=['accuracy'],
         )
         return model
@@ -250,7 +280,7 @@ class UniversalModelTrainer:
         all_data = {}
         for i, ticker in enumerate(tickers):
             try:
-                df = fetcher.fetch_historical_data(ticker, period="5y")
+                df = fetcher.fetch_historical_data(ticker, period="10y")
                 if df is not None and len(df) >= 120:
                     all_data[ticker] = df
             except Exception as e:
@@ -266,7 +296,7 @@ class UniversalModelTrainer:
         # --- Fetch VIX data for market regime features ---
         vix_df = None
         try:
-            vix_raw = yf.download("^VIX", period="5y", progress=False)
+            vix_raw = yf.download("^VIX", period="10y", progress=False)
             if vix_raw is not None and not vix_raw.empty:
                 vix_raw = vix_raw.reset_index()
                 if isinstance(vix_raw.columns, pd.MultiIndex):
@@ -413,7 +443,7 @@ class UniversalModelTrainer:
                     # Re-compile with a lower LR for fine-tuning
                     self.model.compile(
                         optimizer=keras.optimizers.Adam(learning_rate=1e-4),
-                        loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.1),
+                        loss=keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
                         metrics=['accuracy'],
                     )
                     warm_start = True
@@ -449,12 +479,12 @@ class UniversalModelTrainer:
                 callbacks=[
                     keras.callbacks.EarlyStopping(
                         monitor='val_accuracy',
-                        patience=15, restore_best_weights=True,
+                        patience=20, restore_best_weights=True,
                         mode='max',
                     ),
                     keras.callbacks.ReduceLROnPlateau(
                         monitor='val_loss',
-                        patience=7, factor=0.5, min_lr=1e-6,
+                        patience=10, factor=0.5, min_lr=1e-6,
                     ),
                     EpochProgress(),
                 ],
