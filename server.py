@@ -183,11 +183,15 @@ API_PUBLIC_ENDPOINTS = {"/api/health", "/api/heartbeat"}
 
 @app.middleware("http")
 async def api_key_middleware(request: Request, call_next):
-    """Require X-API-Key header for all /api/* endpoints (except public ones)."""
+    """Require X-API-Key header for all /api/* endpoints (except public ones).
+    Logged-in dashboard users (valid session cookie) bypass the API key check."""
     path = request.url.path
     # Strip trailing slashes for consistent matching
     clean_path = path.rstrip("/")
     if clean_path.startswith("/api") and clean_path not in API_PUBLIC_ENDPOINTS:
+        # Allow logged-in UI users to call API without key
+        if _is_logged_in(request):
+            return await call_next(request)
         provided_key = request.headers.get("X-API-Key", "")
         if not provided_key:
             return JSONResponse(
