@@ -152,46 +152,69 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 # ============================================================================
-# REQUEST VALIDATION MIDDLEWARE
+# REQUEST METRICS MIDDLEWARE (pure ASGI — avoids BaseHTTPMiddleware h11 bug)
 # ============================================================================
 
-@app.middleware("http")
-async def request_validation_middleware(request: Request, call_next):
-    """Validate requests and add timing headers"""
-    start_time = time.time()
-    
-    try:
-        response = await call_next(request)
-        
-        # Add timing header
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = f"{process_time:.3f}s"
-        response.headers["X-Server-Time"] = now().isoformat()
-        
-        # S4: Record Prometheus metrics
+class MetricsASGIMiddleware:
+    """Pure ASGI middleware for request timing headers and Prometheus metrics.
+
+    Using a raw ASGI middleware instead of @app.middleware('http') avoids the
+    ``h11.LocalProtocolError: Can't send data when our state is ERROR`` that
+    occurs when BaseHTTPMiddleware tries to stream a response on a connection
+    that has already errored (e.g. client disconnect).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        start_time = time.time()
+        status_code = 500  # default until we see the real status
+
+        async def send_wrapper(message):
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message.get("status", 500)
+                process_time = time.time() - start_time
+                # Inject timing headers into the response
+                headers = list(message.get("headers", []))
+                headers.append((b"x-process-time", f"{process_time:.3f}s".encode()))
+                headers.append((b"x-server-time", now().isoformat().encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
         try:
-            path = request.url.path
-            # Normalise parameterised paths for metric cardinality
-            if path.startswith("/api/models/") and "/download" in path:
-                path = "/api/models/{ticker}/download"
-            elif path.startswith("/api/models/") and "/hash" in path:
-                path = "/api/models/{ticker}/hash"
-            elif path.startswith("/api/chart-cache/"):
-                path = "/api/chart-cache/{ticker}"
-            prom_metrics.http_requests_total.inc(
-                method=request.method, path=path,
-                status=str(response.status_code),
-            )
-            prom_metrics.http_request_duration.observe(
-                process_time, method=request.method, path=path,
-            )
+            await self.app(scope, receive, send_wrapper)
         except Exception:
-            pass
-        
-        return response
-    except Exception as e:
-        logger.error(f"Request middleware error: {e}")
-        raise
+            raise
+        finally:
+            # Record Prometheus metrics regardless of success/failure
+            process_time = time.time() - start_time
+            try:
+                path = scope.get("path", "/unknown")
+                method = scope.get("method", "GET")
+                # Normalise parameterised paths for metric cardinality
+                if path.startswith("/api/models/") and "/download" in path:
+                    path = "/api/models/{ticker}/download"
+                elif path.startswith("/api/models/") and "/hash" in path:
+                    path = "/api/models/{ticker}/hash"
+                elif path.startswith("/api/chart-cache/"):
+                    path = "/api/chart-cache/{ticker}"
+                prom_metrics.http_requests_total.inc(
+                    method=method, path=path, status=str(status_code),
+                )
+                prom_metrics.http_request_duration.observe(
+                    process_time, method=method, path=path,
+                )
+            except Exception:
+                pass
+
+
+app.add_middleware(MetricsASGIMiddleware)
 
 
 # Login auth for web UI

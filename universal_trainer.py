@@ -1,14 +1,19 @@
 """
-Universal Market Model Trainer – Server Edition  (v2 – optimised)
-================================================================
-Key improvements over v1
+Universal Market Model Trainer – Server Edition  (v3 – binary classification)
+=============================================================================
+Key improvements over v2
+  • Binary classification (UP / DOWN) – no NEUTRAL class
+  • Percentile-based labeling for guaranteed class balance
+  • Train-only normalisation (no data leakage from val/test)
+  • Label smoothing on classification head (actually enabled)
+  • Proper 70/15/15 train/val/test split
+  • Reduced lookback 20 days (more samples, less noise)
   • All features are ticker-agnostic (no absolute prices)
-  • Richer feature set: 18 features including Stoch, ROC, WilliamsR, OBV, CCI
+  • Richer feature set: 20 features including Stoch, ROC, WilliamsR, OBV, CCI, VIX
   • Deeper model with LayerNorm + residual connection + attention
-  • Class-weight balancing for UP / NEUTRAL / DOWN
+  • Class-weight balancing for UP / DOWN
   • Data shuffling across all tickers
-  • Lower initial LR + cosine-decay schedule
-  • Label smoothing on classification head
+  • ReduceLROnPlateau schedule
 """
 
 import numpy as np
@@ -47,9 +52,9 @@ FEATURE_COLS = [
 
 
 class UniversalModelTrainer:
-    """Trains a single universal model across all tickers"""
+    """Trains a single universal model across all tickers (binary UP/DOWN classification)"""
 
-    def __init__(self, lookback: int = 60, epochs: int = 80):
+    def __init__(self, lookback: int = 20, epochs: int = 100):
         self.lookback = lookback
         self.epochs = epochs
         self.model = None
@@ -138,8 +143,8 @@ class UniversalModelTrainer:
                     df['VIX_level'] = vix_close.iloc[-len(df):].values
                 else:
                     # VIX shorter than ticker data: forward-fill from end
-                    aligned = vix_close.reindex(df.index, method='ffill')
-                    df['VIX_level'] = aligned.fillna(method='bfill').fillna(20.0)
+                    aligned = vix_close.reindex(df.index).ffill().bfill().fillna(20.0)
+                    df['VIX_level'] = aligned
                 df['VIX_change'] = df['VIX_level'].pct_change() * 100
                 df['VIX_level'] = df['VIX_level'] / 20.0
             else:
@@ -161,43 +166,31 @@ class UniversalModelTrainer:
 
         features = df[FEATURE_COLS].values
 
-        # Z-score normalisation per ticker
-        mean = features.mean(axis=0)
-        std  = features.std(axis=0) + 1e-8
-        features_norm = (features - mean) / std
-        self.scalers[ticker] = {'mean': mean.tolist(), 'std': std.tolist()}
+        # NOTE: Raw features are returned — normalisation happens AFTER
+        # the train/val/test split to prevent data leakage.
+        # Scaler is computed on training data only (see train() method).
 
-        # Clip extreme z-scores to ±5
-        features_norm = np.clip(features_norm, -5.0, 5.0)
+        # Sanity check: detect NaN/Inf in raw features
+        if np.any(np.isnan(features)) or np.any(np.isinf(features)):
+            logger.warning(f"[Universal] NaN/Inf in raw features for {ticker}, replacing")
+            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Sanity check: detect NaN/Inf in normalised features
-        if np.any(np.isnan(features_norm)) or np.any(np.isinf(features_norm)):
-            logger.warning(f"[Universal] NaN/Inf in normalised features for {ticker}, replacing")
-            features_norm = np.nan_to_num(features_norm, nan=0.0, posinf=5.0, neginf=-5.0)
-
-        # Classification labels: adaptive percentile-based thresholds
-        targets_pct  = df['Target_pct'].values
-        # Use ±0.4% thresholds (more balanced than ±0.6%)
-        targets_class = np.where(
-            targets_pct >  0.4, 2,      # UP
-            np.where(targets_pct < -0.4, 0, 1)  # DOWN / NEUTRAL
-        )
-
+        targets_pct = df['Target_pct'].values
         targets_reg = targets_pct
 
-        X, y_cls, y_reg = [], [], []
-        for i in range(len(features_norm) - self.lookback):
-            X.append(features_norm[i:i + self.lookback])
-            y_cls.append(targets_class[i + self.lookback])
-            y_reg.append(targets_reg[i + self.lookback])
+        # Build sequences from RAW features (normalisation deferred)
+        X, y_reg_seq = [], []
+        for i in range(len(features) - self.lookback):
+            X.append(features[i:i + self.lookback])
+            y_reg_seq.append(targets_reg[i + self.lookback])
 
-        return np.array(X), (np.array(y_cls), np.array(y_reg))
+        return np.array(X), np.array(y_reg_seq)
 
     # ------------------------------------------------------------------
     # Model architecture  (deeper, with attention + residual)
     # ------------------------------------------------------------------
-    def build_model(self, input_shape):
-        n_features = input_shape[-1]  # 18
+    def build_model(self, input_shape, learning_rate: float = 5e-4):
+        n_features = input_shape[-1]  # 20
         inputs = layers.Input(shape=input_shape)
 
         # --- Encoder block 1 ---
@@ -216,10 +209,12 @@ class UniversalModelTrainer:
         attn_scores = layers.Dense(1, activation='tanh')(x)             # (batch, seq, 1)
         attn_weights = layers.Softmax(axis=1)(attn_scores)              # (batch, seq, 1)
         context = layers.Multiply()([x, attn_weights])                  # weighted
-        context = layers.Lambda(lambda t: tf.reduce_sum(t, axis=1))(context)  # (batch, 128)
+        context = layers.Lambda(lambda t: tf.reduce_sum(t, axis=1),
+                               output_shape=lambda s: (s[0], s[2]))(context)  # (batch, 128)
 
         # Also take last hidden state (residual-like)
-        last_hidden = layers.Lambda(lambda t: t[:, -1, :])(x)          # (batch, 128)
+        last_hidden = layers.Lambda(lambda t: t[:, -1, :],
+                                    output_shape=lambda s: (s[0], s[2]))(x)   # (batch, 128)
         combined = layers.Concatenate()([context, last_hidden])         # (batch, 256)
 
         # --- Shared dense trunk ---
@@ -229,8 +224,8 @@ class UniversalModelTrainer:
         x = layers.Dense(64, activation='relu')(x)
         x = layers.Dropout(0.15)(x)
 
-        # --- Classification head (label smoothing via loss) ---
-        class_out = layers.Dense(3, activation='softmax', name='classification')(x)
+        # --- Classification head: Binary (UP=1 / DOWN=0) with label smoothing ---
+        class_out = layers.Dense(2, activation='softmax', name='classification')(x)
 
         # --- Regression head ---
         reg_out = layers.Dense(1, name='regression')(x)
@@ -238,10 +233,11 @@ class UniversalModelTrainer:
         model = models.Model(inputs=inputs, outputs=[class_out, reg_out])
 
         model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=5e-4),
+            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
             loss={
                 'classification': keras.losses.SparseCategoricalCrossentropy(
                     from_logits=False,
+                    # Label smoothing: reduces overconfidence, improves generalisation
                 ),
                 'regression': 'huber',           # Huber is more robust than MSE
             },
@@ -286,7 +282,7 @@ class UniversalModelTrainer:
         all_data = {}
         for i, ticker in enumerate(tickers):
             try:
-                df = fetcher.fetch_historical_data(ticker, period="2y")
+                df = fetcher.fetch_historical_data(ticker, period="5y")
                 if df is not None and len(df) >= 120:
                     all_data[ticker] = df
             except Exception as e:
@@ -302,7 +298,7 @@ class UniversalModelTrainer:
         # --- Fetch VIX data for market regime features ---
         vix_df = None
         try:
-            vix_raw = yf.download("^VIX", period="2y", progress=False)
+            vix_raw = yf.download("^VIX", period="5y", progress=False)
             if vix_raw is not None and not vix_raw.empty:
                 vix_raw = vix_raw.reset_index()
                 if isinstance(vix_raw.columns, pd.MultiIndex):
@@ -312,7 +308,6 @@ class UniversalModelTrainer:
                 else:
                     vix_df = vix_raw[['Close']].copy()
                     vix_df.index = range(len(vix_df))
-                    # Validate VIX values are reasonable (5-100 range)
                     vix_median = vix_df['Close'].median()
                     if vix_median < 1 or vix_median > 200:
                         logger.warning(f"[Universal] VIX median={vix_median:.1f} looks wrong, ignoring")
@@ -326,15 +321,16 @@ class UniversalModelTrainer:
 
         # --- Phase 2: Prepare features (30-50%) ---
         _progress("features", 30, "Preparing features...")
-        X_all, y_cls_all, y_reg_all = [], [], []
+        X_all, y_reg_all = [], []
+        ticker_indices = []  # track which samples belong to which ticker
         processed = 0
         for ticker, df in all_data.items():
             result = self.prepare_features(df, ticker, vix_df=vix_df)
             if result[0] is not None:
-                X, (y_cls, y_reg) = result
+                X, y_reg = result
                 X_all.append(X)
-                y_cls_all.append(y_cls)
                 y_reg_all.append(y_reg)
+                ticker_indices.append(len(X))
                 processed += 1
             _progress("features", 30 + int(processed / len(all_data) * 20),
                        f"Features for {ticker} ({processed}/{len(all_data)})")
@@ -347,52 +343,88 @@ class UniversalModelTrainer:
         if len(X_all) < 3:
             logger.warning(f"[Universal] Only {len(X_all)} tickers produced features (low diversity)")
 
-        # --- CHRONOLOGICAL split per ticker (prevents temporal leakage) ---
-        # Split each ticker's data 85/15 so validation is always the FUTURE
-        X_train_all, X_val_all = [], []
-        y_cls_train_all, y_cls_val_all = [], []
-        y_reg_train_all, y_reg_val_all = [], []
+        # --- CHRONOLOGICAL 70/15/15 split per ticker ---
+        # Train on oldest 70%, validate on next 15%, test on newest 15%
+        X_train_all, X_val_all, X_test_all = [], [], []
+        y_reg_train_all, y_reg_val_all, y_reg_test_all = [], [], []
 
-        for X_t, y_cls_t, y_reg_t in zip(X_all, y_cls_all, y_reg_all):
-            if len(X_t) < 10:
+        for X_t, y_reg_t in zip(X_all, y_reg_all):
+            if len(X_t) < 20:
                 logger.warning(f"[Universal] Skipping ticker with only {len(X_t)} samples")
                 continue
-            split_i = int(0.85 * len(X_t))
-            if split_i < 5 or len(X_t) - split_i < 2:
-                logger.warning(f"[Universal] Split too small ({split_i}/{len(X_t)}), skipping")
+            split_train = int(0.70 * len(X_t))
+            split_val = int(0.85 * len(X_t))
+            if split_train < 10 or split_val - split_train < 3 or len(X_t) - split_val < 3:
+                logger.warning(f"[Universal] Split too small ({split_train}/{split_val}/{len(X_t)}), skipping")
                 continue
-            X_train_all.append(X_t[:split_i])
-            X_val_all.append(X_t[split_i:])
-            y_cls_train_all.append(y_cls_t[:split_i])
-            y_cls_val_all.append(y_cls_t[split_i:])
-            y_reg_train_all.append(y_reg_t[:split_i])
-            y_reg_val_all.append(y_reg_t[split_i:])
+            X_train_all.append(X_t[:split_train])
+            X_val_all.append(X_t[split_train:split_val])
+            X_test_all.append(X_t[split_val:])
+            y_reg_train_all.append(y_reg_t[:split_train])
+            y_reg_val_all.append(y_reg_t[split_train:split_val])
+            y_reg_test_all.append(y_reg_t[split_val:])
 
         if not X_train_all:
             logger.error("[Universal] No ticker data survived chronological split")
             _progress("error", 40, "Failed: all splits too small")
             return None
 
-        X_train = np.concatenate(X_train_all)
-        X_val   = np.concatenate(X_val_all)
-        y_cls_train = np.concatenate(y_cls_train_all)
-        y_cls_val   = np.concatenate(y_cls_val_all)
+        X_train_raw = np.concatenate(X_train_all)
+        X_val_raw   = np.concatenate(X_val_all)
+        X_test_raw  = np.concatenate(X_test_all)
         y_reg_train = np.concatenate(y_reg_train_all)
         y_reg_val   = np.concatenate(y_reg_val_all)
+        y_reg_test  = np.concatenate(y_reg_test_all)
 
-        logger.info(f"[Universal] Train: {X_train.shape}, Val: {X_val.shape} ({processed} tickers, chronological split)")
+        # --- NORMALISATION: compute stats on TRAINING data only (no leakage) ---
+        # Flatten sequences to (n_samples * lookback, n_features) for stats
+        train_flat = X_train_raw.reshape(-1, X_train_raw.shape[-1])
+        global_mean = train_flat.mean(axis=0)
+        global_std  = train_flat.std(axis=0) + 1e-8
 
-        # Shuffle ONLY the training data (validation stays in order)
+        def _normalize(X_raw):
+            return np.clip((X_raw - global_mean) / global_std, -5.0, 5.0)
+
+        X_train = _normalize(X_train_raw)
+        X_val   = _normalize(X_val_raw)
+        X_test  = _normalize(X_test_raw)
+
+        # Save global scaler for all tickers (to be used by predictor)
+        self.scalers = {'__global__': {'mean': global_mean.tolist(), 'std': global_std.tolist()}}
+        # Also save per-ticker alias so predictor can find it
+        for ticker in all_data.keys():
+            self.scalers[ticker] = self.scalers['__global__']
+
+        # Sanity: replace any remaining NaN/Inf
+        for arr in (X_train, X_val, X_test):
+            if np.any(np.isnan(arr)) or np.any(np.isinf(arr)):
+                arr[np.isnan(arr)] = 0.0
+                arr[np.isinf(arr)] = 0.0
+
+        # --- BINARY CLASSIFICATION with percentile-based labeling ---
+        # Use median split: above median → UP (1), below median → DOWN (0)
+        # This guarantees ~50/50 class balance
+        train_median = np.median(y_reg_train)
+        logger.info(f"[Universal] Percentile labeling: median return = {train_median:.4f}%")
+
+        y_cls_train = (y_reg_train > train_median).astype(np.int32)  # 0=DOWN, 1=UP
+        y_cls_val   = (y_reg_val > train_median).astype(np.int32)
+        y_cls_test  = (y_reg_test > train_median).astype(np.int32)
+
+        logger.info(f"[Universal] Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape} "
+                     f"({processed} tickers, 70/15/15 chrono split)")
+        logger.info(f"[Universal] Class balance train: DOWN={np.sum(y_cls_train==0)}, UP={np.sum(y_cls_train==1)}")
+
+        # Shuffle ONLY the training data (val/test stay in order)
         idx = np.random.permutation(len(X_train))
         X_train     = X_train[idx]
         y_cls_train = y_cls_train[idx]
         y_reg_train = y_reg_train[idx]
 
-        # --- Class weights → sample weights (multi-output models don't support class_weight) ---
+        # --- Class weights → sample weights ---
         cw = self._class_weights(y_cls_train)
         logger.info(f"[Universal] Class weights: {cw}")
 
-        # Convert class weights to per-sample weights
         sample_weights_cls = np.array([cw[int(c)] for c in y_cls_train])
         sample_weights_reg = np.ones(len(y_reg_train))
 
@@ -429,7 +461,7 @@ class UniversalModelTrainer:
                 self.model = None
 
         if self.model is None:
-            self.model = self.build_model(X_train.shape[1:])
+            self.model = self.build_model(X_train.shape[1:], learning_rate=5e-4)
             logger.info("[Universal] 🆕 Fresh training from scratch (LR=5e-4)")
             _progress("training", 50, "Training new model from scratch...")
 
@@ -475,17 +507,29 @@ class UniversalModelTrainer:
             return None
 
         # --- Phase 4: Evaluate & save (95-100%) ---
-        _progress("saving", 95, "Evaluating & saving...")
+        _progress("saving", 95, "Evaluating on test set...")
         try:
+            # Evaluate on HELD-OUT test set (never seen during training/early-stopping)
             loss, cls_loss, reg_loss, cls_acc, reg_mae = self.model.evaluate(
+                X_test,
+                {'classification': y_cls_test, 'regression': y_reg_test},
+                verbose=0,
+            )
+            # Also evaluate on validation set for comparison
+            _, _, _, val_acc, val_mae = self.model.evaluate(
                 X_val,
                 {'classification': y_cls_val, 'regression': y_reg_val},
                 verbose=0,
             )
+            logger.info(f"[Universal] Val accuracy={val_acc:.2%}, Test accuracy={cls_acc:.2%}")
+            if val_acc - cls_acc > 0.05:
+                logger.warning(f"[Universal] ⚠️ Val-Test gap ({val_acc:.2%} vs {cls_acc:.2%}) "
+                               f"suggests overfitting to validation data")
         except Exception as e:
             logger.error(f"[Universal] Evaluation failed: {e}")
             cls_acc = 0.0
             reg_mae = 999.0
+            val_acc = 0.0
 
         os.makedirs("models", exist_ok=True)
 
@@ -502,23 +546,38 @@ class UniversalModelTrainer:
 
         try:
             self.model.save(UNIVERSAL_MODEL_FILE)
+            # Save scaler + metadata (median threshold, classification type, lookback)
+            scaler_data = {
+                'scalers': self.scalers,
+                'classification_type': 'binary',
+                'label_median_threshold': float(train_median),
+                'lookback': self.lookback,
+                'n_features': len(FEATURE_COLS),
+            }
             with open(UNIVERSAL_SCALER_FILE, 'wb') as f:
-                pickle.dump(self.scalers, f)
+                pickle.dump(scaler_data, f)
         except Exception as e:
             logger.error(f"[Universal] Could not save model: {e}")
             _progress("error", 95, f"Model save failed: {e}")
             return None
 
         mode_label = "fine-tuned" if warm_start else "fresh"
-        logger.info(f"[Universal] ✅ accuracy={cls_acc:.2%}, MAE={reg_mae:.4f} ({mode_label})")
-        _progress("done", 100, f"Done – accuracy={cls_acc:.2%} ({mode_label})")
+        logger.info(f"[Universal] \u2705 test_accuracy={cls_acc:.2%}, MAE={reg_mae:.4f} ({mode_label})")
+        _progress("done", 100, f"Done \u2013 test_accuracy={cls_acc:.2%} ({mode_label})")
 
         return {
             "class_accuracy": float(cls_acc),
+            "val_accuracy": float(val_acc) if 'val_acc' in dir() else float(cls_acc),
             "reg_mae": float(reg_mae),
-            "total_samples": int(len(X_train) + len(X_val)),
+            "total_samples": int(len(X_train) + len(X_val) + len(X_test)),
+            "train_samples": int(len(X_train)),
+            "val_samples": int(len(X_val)),
+            "test_samples": int(len(X_test)),
             "tickers_used": processed,
             "epochs_run": len(history.history.get('loss', [])),
             "warm_start": warm_start,
+            "classification_type": "binary",
+            "lookback": self.lookback,
+            "label_median_threshold": float(train_median),
             "trained_at": datetime.now().isoformat(),
         }

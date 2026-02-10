@@ -1,6 +1,8 @@
 # AI Trading Server
 
-Distributed model training server for 62 stocks with a **universal BiGRU model**, 18 ticker-agnostic technical features, self-attention, and dual-head (classification + regression) architecture.
+Distributed model training server for 62 stocks with a **universal BiGRU model**, 20 ticker-agnostic technical features (inkl. VIX Market-Regime), self-attention, and dual-head (**binary** classification + regression) architecture.
+
+> **v3 (current):** Binary classification (UP/DOWN), train-only normalisation, 5 years of data, 70/15/15 chronological split, median-split labeling, lookback = 20 days.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.x-orange)
@@ -14,7 +16,7 @@ Distributed model training server for 62 stocks with a **universal BiGRU model**
 - [Features](#features)
 - [Architecture](#architecture)
 - [Universal Model](#universal-model)
-- [Technical Indicators (18 Features)](#technical-indicators-18-features)
+- [Technical Indicators (20 Features)](#technical-indicators-20-features)
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Usage](#usage)
@@ -28,10 +30,19 @@ Distributed model training server for 62 stocks with a **universal BiGRU model**
 ## Features
 
 ✅ **Universal BiGRU Model** – One model trained across all 62 tickers simultaneously  
-✅ **18 Ticker-Agnostic Features** – All indicators normalised as percentages/ratios (no absolute prices)  
-✅ **Dual-Head Architecture** – Simultaneous 3-class classification (UP/NEUTRAL/DOWN) + regression  
+✅ **20 Ticker-Agnostic Features** – All indicators normalised as percentages/ratios + VIX market-regime  
+✅ **Dual-Head Architecture** – Simultaneous **binary** classification (UP/DOWN) + regression  
 ✅ **Self-Attention + Residual** – Attention-weighted context vector with skip connection  
+✅ **Chronological Train/Val/Test Split** – 70/15/15 per ticker, no temporal data leakage  
+✅ **Train-Only Normalisation** – Z-score stats computed on training set only (no leakage)  
+✅ **Median-Split Labeling** – Percentile-based 50/50 balanced class labels  
+✅ **5 Years of Data** – Increased training data for better generalisation  
+✅ **VIX Market-Regime Features** – VIX level & change as market volatility signals  
 ✅ **Class-Weight Balancing** – Automatic sample weighting to combat label imbalance  
+✅ **API Key Authentication** – HMAC-based `X-API-Key` for all protected endpoints  
+✅ **Dashboard Session Bypass** – Logged-in UI users access API without separate key  
+✅ **Europe/Berlin Timestamps** – All server timestamps in local timezone (`+01:00`/`+02:00`)  
+✅ **Comprehensive Error Handling** – VIX fallback, shape validation, NaN detection, scaler mismatch  
 ✅ **Multi-Provider Price Fetching** – Alpaca (primary) → Finnhub → Yahoo (fallback)  
 ✅ **Parallel Price Collection** – ThreadPoolExecutor with up to 20 workers  
 ✅ **WebSocket Support** – Real-time training progress & server events  
@@ -39,6 +50,7 @@ Distributed model training server for 62 stocks with a **universal BiGRU model**
 ✅ **Google Drive Backup** – Automatic daily model backups (keeps last 7)  
 ✅ **Smart Caching** – 2-hour TTL with automatic validation  
 ✅ **Zero-Downtime Training** – Background jobs don't block API  
+✅ **Warm Start Training** – Continue training from existing model (with shape validation)  
 ✅ **Legacy Per-Ticker Models** – Fallback LSTM models still supported  
 
 ---
@@ -50,9 +62,9 @@ Distributed model training server for 62 stocks with a **universal BiGRU model**
 | Component | File | Description |
 |-----------|------|-------------|
 | **Data Fetcher** | `data_fetcher.py` | Multi-provider price data (Alpaca → Finnhub → Yahoo) with rate limiting & caching |
-| **Universal Trainer** | `universal_trainer.py` | BiGRU(128)→BiGRU(64) + attention + residual, 18 features, 60-day lookback |
+| **Universal Trainer** | `universal_trainer.py` | BiGRU(128)→BiGRU(64) + attention + residual, 20 features, 20-day lookback, 70/15/15 split, binary classification |
 | **Legacy Trainer** | `trainer.py` | Per-ticker dual-head LSTM (fallback) |
-| **API Server** | `server.py` | FastAPI with REST + WebSocket, JWT auth, model serving, dashboard |
+| **API Server** | `server.py` | FastAPI with REST + WebSocket, API key auth, session bypass, Berlin timezone, model serving, dashboard |
 | **Dashboard** | `templates/dashboard.html` | Modern dark-themed UI with live training status |
 | **Risk Profiles** | `risk_profiles.py` | Per-user risk configuration |
 | **Simulator** | `simulator.py` | Backtesting engine |
@@ -60,20 +72,23 @@ Distributed model training server for 62 stocks with a **universal BiGRU model**
 ### Data Flow
 
 ```
-Market Data (Alpaca/Finnhub/Yahoo)
+Market Data (Alpaca/Finnhub/Yahoo) — 5 years
         │
         ▼
   CachedDataFetcher (2h TTL)
         │
         ▼
   UniversalModelTrainer
-    ├── Feature Engineering (18 indicators)
-    ├── Z-score normalisation + clipping (±5σ)
+    ├── Feature Engineering (20 indicators + VIX)
+    ├── RAW features collected per ticker
+    ├── Chronological split (70/15/15 per ticker)
+    ├── Z-score normalisation (train-set stats only, ±5σ clipping)
+    ├── Median-split binary labeling (DOWN=0, UP=1)
     ├── BiGRU(128) → BiGRU(64) + Attention
-    └── Dual Head: Classification (3-class) + Regression
+    └── Dual Head: Binary Classification (2-class) + Regression
         │
         ▼
-  Model Files (H5 + Scaler PKL)
+  Model Files (H5 + Scaler PKL v3)
         │
         ▼
   FastAPI Server → Client Download / WebSocket Updates
@@ -85,10 +100,10 @@ Market Data (Alpaca/Finnhub/Yahoo)
 
 The universal model replaces per-ticker training with a single model trained across all 62 stocks. This gives more training data, better generalisation, and eliminates the need to maintain hundreds of individual models.
 
-### Architecture (v2)
+### Architecture (v3 — Binary)
 
 ```
-Input (60, 18)
+Input (20, 20)
     │
     ▼
 BiGRU(128, return_sequences=True) + LayerNorm
@@ -108,7 +123,7 @@ Dense(128, ReLU) + LayerNorm + Dropout(0.2)
     ▼
 Dense(64, ReLU) + Dropout(0.15)
     │
-    ├──► Classification Head (Dense 3, Softmax) → UP / NEUTRAL / DOWN
+    ├──► Classification Head (Dense 2, Softmax) → UP / DOWN
     └──► Regression Head (Dense 1, Linear) → predicted % change
 ```
 
@@ -116,22 +131,53 @@ Dense(64, ReLU) + Dropout(0.15)
 
 | Parameter | Value |
 |-----------|-------|
-| Lookback window | 60 days |
-| Epochs | 80 (EarlyStopping patience=15) |
+| Lookback window | 20 days |
+| Epochs | 100 (EarlyStopping patience=15) |
 | Batch size | 64 |
 | Learning rate | 5×10⁻⁴ (ReduceLROnPlateau, factor=0.5, patience=7) |
 | Classification loss | SparseCategoricalCrossentropy |
 | Regression loss | Huber |
 | Loss weights | Classification: 1.0, Regression: 0.3 |
-| Label threshold | ±0.4% (UP/DOWN vs NEUTRAL boundary) |
-| Z-score clipping | ±5.0 |
-| Train/Val split | 85% / 15% |
-| Data shuffling | Cross-ticker random permutation |
+| Labeling | Median-split (percentile-based, guaranteed 50/50 balance) |
+| Z-score clipping | ±5.0 (computed from training set only) |
+| Train/Val/Test split | 70% / 15% / 15% (chronological per ticker) |
+| Data period | 5 years |
+| Data shuffling | Training set only (cross-ticker random permutation) |
 | Class balancing | Per-sample weights (auto-computed) |
+
+### Scaler Format (v3)
+
+The scaler PKL file now stores metadata alongside normalisation stats:
+
+```python
+{
+    'scalers': {
+        '__global__': {'mean': [...], 'std': [...]},  # train-set global stats
+        'AAPL': {'mean': [...], 'std': [...]},         # per-ticker reference
+        ...
+    },
+    'classification_type': 'binary',    # 'binary' or '3-class'
+    'label_median_threshold': 0.02,     # median of train regression targets
+    'lookback': 20,
+    'n_features': 20
+}
+```
+
+### v3 Changes Summary
+
+| Change | Before (v2) | After (v3) | Reason |
+|--------|-------------|------------|--------|
+| Classification | 3-class (UP/NEUTRAL/DOWN) | **2-class (UP/DOWN)** | ~50% of labels were NEUTRAL, model defaulted to HOLD |
+| Labeling | Fixed ±0.4% threshold | **Median-split** | Guaranteed 50/50 balance, no threshold tuning |
+| Normalisation | Z-score on all data | **Z-score on train set only** | Prevented data leakage |
+| Split | 85/15 (train/val) | **70/15/15 (train/val/test)** | Proper held-out evaluation set |
+| Lookback | 60 days | **20 days** | 3× more samples, less noise |
+| Data period | 2 years | **5 years** | More training data |
+| Scaler format | Dict of tickers | **Dict with metadata** | Stores classification type, threshold, etc. |
 
 ---
 
-## Technical Indicators (18 Features)
+## Technical Indicators (20 Features)
 
 All features are **ticker-agnostic** – expressed as percentages, ratios, or oscillator values. No absolute prices.
 
@@ -155,6 +201,8 @@ All features are **ticker-agnostic** – expressed as percentages, ratios, or os
 | 16 | `CCI` | Commodity Channel Index (20-period) | ~ ±300 |
 | 17 | `OBV_pct` | On-Balance Volume % change (clipped ±50) | ±50% |
 | 18 | `Momentum` | 10-day price momentum (%) | ~ ±20% |
+| 19 | `VIX_level` | VIX index normalised (÷20) | ~ 0.5–3.0 |
+| 20 | `VIX_change` | VIX daily % change | ~ ±15% |
 
 ---
 
@@ -204,6 +252,7 @@ sudo systemctl start ai-trading-server
 export ADMIN_USER="admin"
 export ADMIN_PASS="your_secure_password"
 export SESSION_SECRET="your_session_secret_key"
+export API_KEY="your_api_key"  # Required for /api/* access from clients
 
 # API Keys (for multi-provider price fetching)
 export ALPACA_API_KEY_ID="your_alpaca_key"
@@ -261,9 +310,22 @@ curl -X POST http://localhost:8000/api/train-all-legacy
 
 ### Health & Info
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/health` | Server health & uptime |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/health` | Public | Server health & uptime |
+| `GET` | `/api/heartbeat` | Public | Client heartbeat |
+| `GET` | `/api/metrics` | API Key | CPU, RAM, system stats |
+
+### Authentication
+
+All `/api/*` endpoints (except `/api/health` and `/api/heartbeat`) require either:
+- **`X-API-Key` header** – for programmatic clients
+- **Valid session cookie** – for logged-in dashboard users (automatic bypass)
+
+```bash
+# Example: API call with key
+curl -H "X-API-Key: your_api_key" http://localhost:8000/api/models
+```
 
 ### Universal Model
 
@@ -285,13 +347,16 @@ curl -X POST http://localhost:8000/api/train-all-legacy
 | `GET` | `/api/models/{ticker}/download` | Download ticker model ZIP |
 | `GET` | `/api/models/{ticker}/hash` | Ticker model hash |
 
-### Live Prices
+### Live Prices & Chart Cache
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/prices/{ticker}` | Single stock live price |
 | `GET` | `/api/prices?tickers=AAPL,MSFT` | Multiple stock prices |
-| `GET` | `/api/chart-cache` | All cached live prices |
+| `GET` | `/api/chart-cache` | All cached live prices (with Berlin timestamps) |
+| `POST` | `/api/chart-cache/batch` | Add multiple price points |
+| `DELETE` | `/api/chart-cache` | Clear all cached chart data |
+| `GET` | `/api/chart-cache/{ticker}` | Get cached prices for one ticker |
 
 ### WebSocket
 
@@ -331,7 +396,7 @@ curl -X POST http://localhost:8000/api/train-all-legacy
 | Metric | Value |
 |--------|-------|
 | **Hardware** | i5-6400 (4C/4T), 24 GB RAM |
-| **Universal training time** | ~30–60 min (62 tickers, 80 epochs) |
+| **Universal training time** | ~30–60 min (62 tickers, 100 epochs) |
 | **Model file size** | ~5 MB (H5) + ~200 KB (scaler) |
 | **API response time** | < 100 ms |
 | **Price collection** | ~5s cycle (parallel, 20 workers) |
@@ -344,6 +409,8 @@ curl -X POST http://localhost:8000/api/train-all-legacy
 |---------|----------|
 | **"Too Many Requests"** | Multi-provider fallback handles this automatically. Check API keys are configured. |
 | **WebSocket 403** | Ensure `allow_credentials=False` in CORS config and `websockets` package installed. |
+| **Dashboard shows no data** | Session expired – log in again at `/login`. Dashboard uses session cookie to bypass API key. |
+| **401 on API calls** | Missing or invalid `X-API-Key` header. Public endpoints: `/api/health`, `/api/heartbeat`. |
 | **No price data** | Check API keys in env vars or `api_keys.py`. Verify internet connection. |
 | **OOM during training** | Reduce batch size in `universal_trainer.py` or limit tickers. |
 | **GDrive backup failed** | Re-authorise: `python backup_gdrive.py --setup` |
