@@ -338,9 +338,18 @@ class ServerState:
         self.last_training = {}
         self.logs = []
         
+        # Universal model state (must be set before _load_model_versions)
+        self.universal_model_version = "v0"
+        self.universal_training_status = "idle"  # idle/training/completed/failed
+        self.universal_training_progress = 0.0
+        self.universal_training_message = ""
+        self.universal_training_start = None
+        self.universal_training_metrics = {}
+        
         # Model version tracking
         self.model_versions_file = Path("./data/model_versions.json")
         self.model_versions_file.parent.mkdir(parents=True, exist_ok=True)
+        self._load_universal_version()  # must run before _load_model_versions
         self._load_model_versions()
 
         # Live price cache for chart data
@@ -380,15 +389,6 @@ class ServerState:
         # Error tracking
         self.error_log = []  # Recent errors for diagnostics
         self.max_error_log = 100
-        
-        # Universal model state
-        self.universal_model_version = "v0"
-        self.universal_training_status = "idle"  # idle/training/completed/failed
-        self.universal_training_progress = 0.0
-        self.universal_training_message = ""
-        self.universal_training_start = None
-        self.universal_training_metrics = {}
-        self._load_universal_version()
         
         self.scheduler = BackgroundScheduler()
         self.fetcher = CachedDataFetcher()
