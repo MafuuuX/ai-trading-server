@@ -20,6 +20,7 @@ import ta
 import pickle
 import os
 import logging
+import yfinance as yf
 from datetime import datetime
 from pathlib import Path
 
@@ -41,6 +42,7 @@ FEATURE_COLS = [
     'ROC_10', 'Williams_R',
     'CCI', 'OBV_pct',
     'Momentum',
+    'VIX_level', 'VIX_change',
 ]
 
 
@@ -56,7 +58,7 @@ class UniversalModelTrainer:
     # ------------------------------------------------------------------
     # Feature engineering  (percentage / ratio only – no absolute prices)
     # ------------------------------------------------------------------
-    def prepare_features(self, df: pd.DataFrame, ticker: str):
+    def prepare_features(self, df: pd.DataFrame, ticker: str, vix_df: pd.DataFrame = None):
         """
         Returns (X, (y_class, y_reg))  or  (None, None)
         All features are percentage-based or bounded [0-100] so that they
@@ -125,6 +127,18 @@ class UniversalModelTrainer:
 
         # ---- Momentum (10-day % change) ----
         df['Momentum'] = close.pct_change(10) * 100
+
+        # ---- VIX market regime features ----
+        if vix_df is not None and not vix_df.empty:
+            # Align VIX to ticker's index
+            df['VIX_level'] = vix_df['Close'].reindex(df.index, method='ffill')
+            df['VIX_change'] = df['VIX_level'].pct_change() * 100
+            # Normalise VIX level: divide by 20 (long-term median ~20)
+            df['VIX_level'] = df['VIX_level'] / 20.0
+        else:
+            # Fallback: neutral values if VIX unavailable
+            df['VIX_level'] = 1.0    # 1.0 = VIX at ~20 (normal)
+            df['VIX_change'] = 0.0
 
         # ---- Target: next-day percentage change ----
         df['Target_pct'] = close.pct_change(1).shift(-1) * 100
@@ -268,12 +282,26 @@ class UniversalModelTrainer:
             logger.error(f"[Universal] Not enough data: only {len(all_data)} tickers")
             return None
 
+        # --- Fetch VIX data for market regime features ---
+        vix_df = None
+        try:
+            vix_raw = yf.download("^VIX", period="2y", progress=False)
+            if vix_raw is not None and not vix_raw.empty:
+                vix_raw = vix_raw.reset_index()
+                if isinstance(vix_raw.columns, pd.MultiIndex):
+                    vix_raw.columns = vix_raw.columns.droplevel(1)
+                vix_df = vix_raw[['Close']].copy()
+                vix_df.index = range(len(vix_df))
+                logger.info(f"[Universal] VIX data loaded: {len(vix_df)} days")
+        except Exception as e:
+            logger.warning(f"[Universal] VIX fetch failed (using fallback): {e}")
+
         # --- Phase 2: Prepare features (30-50%) ---
         _progress("features", 30, "Preparing features...")
         X_all, y_cls_all, y_reg_all = [], [], []
         processed = 0
         for ticker, df in all_data.items():
-            result = self.prepare_features(df, ticker)
+            result = self.prepare_features(df, ticker, vix_df=vix_df)
             if result[0] is not None:
                 X, (y_cls, y_reg) = result
                 X_all.append(X)
@@ -287,27 +315,39 @@ class UniversalModelTrainer:
             logger.error("[Universal] No feature data produced")
             return None
 
-        X_combined   = np.concatenate(X_all)
-        y_cls_combined = np.concatenate(y_cls_all)
-        y_reg_combined = np.concatenate(y_reg_all)
+        # --- CHRONOLOGICAL split per ticker (prevents temporal leakage) ---
+        # Split each ticker's data 85/15 so validation is always the FUTURE
+        X_train_all, X_val_all = [], []
+        y_cls_train_all, y_cls_val_all = [], []
+        y_reg_train_all, y_reg_val_all = [], []
 
-        logger.info(f"[Universal] Combined: {X_combined.shape} ({processed} tickers)")
+        for X_t, y_cls_t, y_reg_t in zip(X_all, y_cls_all, y_reg_all):
+            split_i = int(0.85 * len(X_t))
+            X_train_all.append(X_t[:split_i])
+            X_val_all.append(X_t[split_i:])
+            y_cls_train_all.append(y_cls_t[:split_i])
+            y_cls_val_all.append(y_cls_t[split_i:])
+            y_reg_train_all.append(y_reg_t[:split_i])
+            y_reg_val_all.append(y_reg_t[split_i:])
 
-        # --- Shuffle data across all tickers ---
-        idx = np.random.permutation(len(X_combined))
-        X_combined     = X_combined[idx]
-        y_cls_combined = y_cls_combined[idx]
-        y_reg_combined = y_reg_combined[idx]
+        X_train = np.concatenate(X_train_all)
+        X_val   = np.concatenate(X_val_all)
+        y_cls_train = np.concatenate(y_cls_train_all)
+        y_cls_val   = np.concatenate(y_cls_val_all)
+        y_reg_train = np.concatenate(y_reg_train_all)
+        y_reg_val   = np.concatenate(y_reg_val_all)
+
+        logger.info(f"[Universal] Train: {X_train.shape}, Val: {X_val.shape} ({processed} tickers, chronological split)")
+
+        # Shuffle ONLY the training data (validation stays in order)
+        idx = np.random.permutation(len(X_train))
+        X_train     = X_train[idx]
+        y_cls_train = y_cls_train[idx]
+        y_reg_train = y_reg_train[idx]
 
         # --- Class weights → sample weights (multi-output models don't support class_weight) ---
-        cw = self._class_weights(y_cls_combined)
+        cw = self._class_weights(y_cls_train)
         logger.info(f"[Universal] Class weights: {cw}")
-
-        # --- Phase 3: Train (50-95%) ---
-        split = int(0.85 * len(X_combined))
-        X_train, X_val       = X_combined[:split], X_combined[split:]
-        y_cls_train, y_cls_val = y_cls_combined[:split], y_cls_combined[split:]
-        y_reg_train, y_reg_val = y_reg_combined[:split], y_reg_combined[split:]
 
         # Convert class weights to per-sample weights
         sample_weights_cls = np.array([cw[int(c)] for c in y_cls_train])
@@ -405,7 +445,7 @@ class UniversalModelTrainer:
         return {
             "class_accuracy": float(cls_acc),
             "reg_mae": float(reg_mae),
-            "total_samples": int(len(X_combined)),
+            "total_samples": int(len(X_train) + len(X_val)),
             "tickers_used": processed,
             "epochs_run": len(history.history.get('loss', [])),
             "warm_start": warm_start,

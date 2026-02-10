@@ -167,6 +167,25 @@ ADMIN_PASS = os.getenv("ADMIN_PASS", "changeme")
 SESSION_SECRET = os.getenv("SESSION_SECRET", "change_this_secret")
 SESSION_COOKIE = "ai_trading_session"
 
+# API Key authentication for /api/* endpoints
+API_KEY = os.getenv("API_KEY", "changeme_api_key")
+# Endpoints that do NOT require an API key
+API_PUBLIC_ENDPOINTS = {"/api/health", "/api/heartbeat"}
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """Require X-API-Key header for all /api/* endpoints (except public ones)."""
+    path = request.url.path
+    if path.startswith("/api") and path not in API_PUBLIC_ENDPOINTS:
+        provided_key = request.headers.get("X-API-Key", "")
+        if not hmac.compare_digest(provided_key, API_KEY):
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Invalid or missing API key. Set X-API-Key header."},
+            )
+    return await call_next(request)
+
 
 def _sign_session(username: str) -> str:
     payload = f"{username}"
