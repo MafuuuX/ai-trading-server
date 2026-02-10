@@ -16,6 +16,7 @@ import time
 import traceback
 import numpy as np
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
 import logging
@@ -23,6 +24,13 @@ import base64
 import secrets
 import hmac
 import psutil
+
+# Central timezone for all timestamps
+TZ_BERLIN = ZoneInfo("Europe/Berlin")
+
+def now() -> datetime:
+    """Return current time in Europe/Berlin timezone."""
+    return datetime.now(TZ_BERLIN)
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request, Response, Form, Path as FastapiPath, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -153,7 +161,7 @@ async def request_validation_middleware(request: Request, call_next):
         # Add timing header
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = f"{process_time:.3f}s"
-        response.headers["X-Server-Time"] = datetime.now().isoformat()
+        response.headers["X-Server-Time"] = now().isoformat()
         
         return response
     except Exception as e:
@@ -312,10 +320,10 @@ class ServerState:
         self.universal_trainer = UniversalModelTrainer(lookback=60, epochs=80)
         
         # Track startup time for uptime calculation
-        self.startup_time = datetime.now()
+        self.startup_time = now()
         
         # Heartbeat tracking for client health detection
-        self.last_heartbeat = datetime.now()
+        self.last_heartbeat = now()
     
     def _load_feature_stats(self):
         """Load feature statistics from disk"""
@@ -418,7 +426,7 @@ class ServerState:
         if last_training:
             try:
                 last_dt = datetime.fromisoformat(last_training)
-                hours_since = (datetime.now() - last_dt).total_seconds() / 3600
+                hours_since = (now() - last_dt).total_seconds() / 3600
                 interval = self.rl_config.get('rl_training_interval_hours', 24)
                 if hours_since < interval:
                     return False, f"Training interval not reached: {hours_since:.1f}/{interval}h"
@@ -430,7 +438,7 @@ class ServerState:
     def log_error(self, error_type: str, message: str, details: dict = None):
         """Log an error for diagnostics"""
         error_entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now().isoformat(),
             "type": error_type,
             "message": message,
             "details": details or {}
@@ -469,7 +477,7 @@ class ServerState:
                 json.dump({
                     'versions': self.active_models,
                     'universal_version': self.universal_model_version,
-                    'last_updated': datetime.now().isoformat()
+                    'last_updated': now().isoformat()
                 }, f)
         except Exception as e:
             logger.warning(f"Could not save model versions: {e}")
@@ -505,7 +513,7 @@ class ServerState:
             with open(self.chart_cache_file, 'w') as f:
                 json.dump({
                     'live_prices': self.live_prices_cache,
-                    'last_updated': datetime.now().isoformat()
+                    'last_updated': now().isoformat()
                 }, f)
         except Exception as e:
             logger.warning(f"Could not save chart cache: {e}")
@@ -517,7 +525,7 @@ class ServerState:
         
         self.live_prices_cache[ticker].append({
             'price': price,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': now().isoformat()
         })
         
         # Limit cache size
@@ -585,7 +593,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "connected",
             "message": "Connected to AI Trading Server",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": now().isoformat()
         })
         
         # Send current prices if available
@@ -598,7 +606,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     "type": "prices",
                     "prices": prices,
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": now().isoformat()
                 })
         
         # Send current training status
@@ -606,7 +614,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json({
                 "type": "training_status",
                 "data": state.training_status,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": now().isoformat()
             })
         
         # Keep connection alive and listen for client messages
@@ -634,7 +642,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "prices",
                         "prices": prices,
-                        "timestamp": datetime.now().isoformat()
+                        "timestamp": now().isoformat()
                     })
                     
             except asyncio.TimeoutError:
@@ -658,7 +666,7 @@ async def broadcast_training_update(ticker: str, status: str, progress: float = 
         "ticker": ticker,
         "status": status,
         "progress": progress,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": now().isoformat()
     }
     if metrics:
         message["metrics"] = metrics
@@ -670,7 +678,7 @@ async def broadcast_prices(prices: dict):
     await ws_manager.broadcast({
         "type": "prices",
         "prices": prices,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": now().isoformat()
     })
 
 
@@ -679,7 +687,7 @@ def _ws_broadcast(msg_type: str, **kwargs):
     Safely schedules the coroutine on the running event loop."""
     if not ws_manager.active_connections:
         return
-    message = {"type": msg_type, "timestamp": datetime.now().isoformat()}
+    message = {"type": msg_type, "timestamp": now().isoformat()}
     message.update(kwargs)
     try:
         loop = asyncio.get_event_loop()
@@ -695,7 +703,7 @@ def _ws_broadcast(msg_type: str, **kwargs):
 class InMemoryLogHandler(logging.Handler):
     def emit(self, record):
         msg = self.format(record)
-        state.logs.append({"time": datetime.now().isoformat(), "message": msg})
+        state.logs.append({"time": now().isoformat(), "message": msg})
         if len(state.logs) > 200:
             state.logs = state.logs[-200:]
 
@@ -764,10 +772,10 @@ class SimulationRequest(BaseModel):
 @app.get("/api/health", response_model=HealthResponse)
 async def health_check():
     """Server health check"""
-    uptime = (datetime.now() - state.startup_time).total_seconds()
+    uptime = (now() - state.startup_time).total_seconds()
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now().isoformat(),
         "active_models": len(state.active_models),
         "training_queue": sum(1 for s in state.training_status.values() if s == "training"),
         "uptime_seconds": uptime
@@ -795,7 +803,7 @@ async def get_chart_cache():
     """Get cached live price data for all tickers - used by app on startup"""
     return {
         "prices": state.live_prices_cache,
-        "last_updated": datetime.now().isoformat(),
+        "last_updated": now().isoformat(),
         "max_points": state.live_prices_max_points
     }
 
@@ -1043,7 +1051,7 @@ async def log_trade(entry: TradeJournalEntry):
     """Log a new trade to the journal"""
     try:
         trade_record = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now().isoformat(),
             "ticker": entry.ticker.upper(),
             "action": entry.action.upper(),
             "price": entry.price,
@@ -1081,7 +1089,7 @@ async def close_trade(entry: TradeCloseEntry):
                 trade['exit_price'] = entry.exit_price
                 trade['realized_pnl'] = entry.realized_pnl
                 trade['outcome'] = entry.outcome
-                trade['closed_at'] = datetime.now().isoformat()
+                trade['closed_at'] = now().isoformat()
                 state.save_trade_journal()
                 logger.info(f"Trade closed: {ticker} PnL=${entry.realized_pnl:.2f} ({entry.outcome})")
                 return {"status": "ok", "trade_id": i}
@@ -1183,7 +1191,7 @@ async def record_trade_outcome(outcome: TradeOutcome):
     """Record a trade outcome for reinforcement learning training"""
     try:
         outcome_record = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": now().isoformat(),
             "ticker": outcome.ticker.upper(),
             "entry_price": outcome.entry_price,
             "exit_price": outcome.exit_price,
@@ -1366,7 +1374,7 @@ async def run_rl_training():
                 continue
         
         # Update last training timestamp
-        state.rl_config['last_rl_training'] = datetime.now().isoformat()
+        state.rl_config['last_rl_training'] = now().isoformat()
         state.save_rl_config()
         
         logger.info(f"RL training completed: {trained_count} tickers trained")
@@ -1681,10 +1689,10 @@ async def optimize_risk_level(background_tasks: BackgroundTasks):
 @app.get("/api/heartbeat")
 async def heartbeat():
     """Simple heartbeat endpoint for client health checking"""
-    state.last_heartbeat = datetime.now()
+    state.last_heartbeat = now()
     return {
         "status": "alive",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": now().isoformat(),
         "server_time_ms": int(time.time() * 1000)
     }
 
@@ -1890,7 +1898,7 @@ def train_stock_task(ticker: str):
     """Background task to train a stock"""
     try:
         logger.info(f"Starting training for {ticker}...")
-        state.training_start[ticker] = datetime.now()
+        state.training_start[ticker] = now()
         state.training_progress[ticker] = 0.0
         
         # Broadcast training started via WebSocket
@@ -1930,7 +1938,7 @@ def train_stock_task(ticker: str):
         if result:
             state.training_status[ticker] = "completed"
             state.training_progress[ticker] = 100.0  # Set to 100% when completed
-            state.last_training[ticker] = datetime.now().isoformat()
+            state.last_training[ticker] = now().isoformat()
             # Increment model version
             current_version = state.active_models.get(ticker, "v0")
             try:
@@ -1945,7 +1953,7 @@ def train_stock_task(ticker: str):
                 "reg_mae": result.get("reg_mae"),
                 "trained_at": result.get("trained_at")
             }
-            duration = (datetime.now() - state.training_start[ticker]).total_seconds()
+            duration = (now() - state.training_start[ticker]).total_seconds()
             state.training_history.append({
                 "ticker": ticker,
                 "status": "completed",
@@ -1962,12 +1970,12 @@ def train_stock_task(ticker: str):
         else:
             state.training_status[ticker] = "failed"
             state.training_progress[ticker] = 0.0
-            duration = (datetime.now() - state.training_start[ticker]).total_seconds()
+            duration = (now() - state.training_start[ticker]).total_seconds()
             state.training_history.append({
                 "ticker": ticker,
                 "status": "failed",
                 "duration_seconds": duration,
-                "trained_at": datetime.now().isoformat()
+                "trained_at": now().isoformat()
             })
             logger.error(f"Training failed for {ticker}")
             _ws_broadcast("training_update", ticker=ticker, status="failed")
@@ -1975,12 +1983,12 @@ def train_stock_task(ticker: str):
     except Exception as e:
         import traceback
         state.training_status[ticker] = "failed"
-        duration = (datetime.now() - state.training_start[ticker]).total_seconds() if ticker in state.training_start else None
+        duration = (now() - state.training_start[ticker]).total_seconds() if ticker in state.training_start else None
         state.training_history.append({
             "ticker": ticker,
             "status": "failed",
             "duration_seconds": duration,
-            "trained_at": datetime.now().isoformat(),
+            "trained_at": now().isoformat(),
             "error": str(e)
         })
         # Log with full traceback
@@ -2044,7 +2052,7 @@ async def train_all(background_tasks: BackgroundTasks):
 def train_universal_task():
     """Background task: train one universal model across all tickers"""
     try:
-        state.universal_training_start = datetime.now()
+        state.universal_training_start = now()
         state.universal_training_status = "training"
         logger.info(f"[Universal] Starting training with {len(TOP_STOCKS)} tickers...")
         _ws_broadcast("training_update", status="started", mode="universal",
@@ -2076,12 +2084,12 @@ def train_universal_task():
             state.universal_training_metrics = result
             state.save_model_versions()
 
-            duration = (datetime.now() - state.universal_training_start).total_seconds()
+            duration = (now() - state.universal_training_start).total_seconds()
             state.training_history.append({
                 "ticker": "UNIVERSAL",
                 "status": "completed",
                 "duration_seconds": duration,
-                "trained_at": datetime.now().isoformat(),
+                "trained_at": now().isoformat(),
                 "class_accuracy": result.get("class_accuracy"),
                 "reg_mae": result.get("reg_mae"),
                 "tickers_used": result.get("tickers_used"),
