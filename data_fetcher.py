@@ -226,9 +226,15 @@ class CachedDataFetcher:
                 if datetime.now() - timestamp < timedelta(days=self.cache_days):
                     return data
             
-            # Fetch fresh data
+            # Parse period string to determine date range
+            period_days = {
+                '1y': 365, '2y': 730, '3y': 1095, '5y': 1825,
+                '10y': 3650, 'max': 7300,
+            }
+            days = period_days.get(period, 730)
+            
             end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
             
             data = fetch_stock_data(ticker, start_date, end_date)
             
